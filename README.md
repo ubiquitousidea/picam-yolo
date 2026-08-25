@@ -24,31 +24,34 @@ python3 -m venv .venv
 .venv/bin/pip install -e '.[client]'
 ```
 
-**A new Pi, from the git remote** — one command, nothing else needed:
+**A new Pi** — rsync the code over, then provision it in place:
 
 ```bash
-ssh rpi 'git clone git@github.com:ubiquitousidea/picam-yolo.git ~/picam-yolo && bash ~/picam-yolo/scripts/setup_pi.sh'
+HOST=rpi ./scripts/deploy.sh
+ssh rpi 'bash ~/picam-yolo/scripts/setup_pi.sh'
 ```
 
-The repo is private, so the Pi needs its own credentials to clone: generate a
-key on the Pi (`ssh-keygen -t ed25519`) and add the public half to GitHub as a
-deploy key. If you would rather not, `scripts/deploy.sh` rsyncs from a machine
-that already has the code and needs no GitHub access on the Pi at all.
+`setup_pi.sh` installs the apt packages, builds the venv with
+`--system-site-packages`, fetches a CPU-only torch, and exports the NCNN model.
+It takes several minutes, mostly torch. It is idempotent, so re-running it after
+a later `deploy.sh` is harmless.
 
-That installs the apt packages, builds the venv, fetches a CPU-only torch, and
-exports the NCNN model. It takes several minutes, mostly torch.
-
-**Pushing local changes to a Pi you already set up** (assumes SSH alias `rpi`):
+**Pushing later changes** to a Pi that is already set up:
 
 ```bash
-HOST=rpi ./scripts/deploy.sh              # code only
+HOST=rpi ./scripts/deploy.sh               # code only
 WITH_MODELS=1 HOST=rpi ./scripts/deploy.sh # ...and a locally exported model
 ```
 
-Useful knobs for `setup_pi.sh`: `REPO_DIR` (default `~/picam-yolo`), `IMGSZ`
-(default 416), and `SKIP_MODEL=1` if you intend to rsync a model over instead.
-The model export is pinned to a single core deliberately — a 4-core export
-browns out an under-powered Pi 5, and the reboot leaves a truncated model.
+Knobs for `setup_pi.sh`: `REPO_DIR` (default `~/picam-yolo`), `IMGSZ` (default
+416, and it must match the server's `--imgsz`), `SKIP_MODEL=1` when you intend
+to rsync a model over instead. The model export is pinned to a single core
+deliberately — a 4-core export browns out an under-powered Pi 5, and the reboot
+leaves a truncated model behind.
+
+Cloning this repo directly on the Pi also works, but the repo is private, so
+that route needs a deploy key on the Pi. `deploy.sh` needs no GitHub access
+there at all.
 
 ## Run
 

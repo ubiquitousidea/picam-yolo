@@ -195,14 +195,16 @@ four files) and `.venv/bin/pnnx`. Consequences worth remembering:
 ## Provisioning a new Pi
 
 The repo is source-only; the exported NCNN model is a build artifact and is
-deliberately not tracked. A fresh Pi bootstraps in one command:
+deliberately not tracked. The working flow is rsync-then-provision — the Pi has
+no GitHub credentials and is not expected to get any:
 
 ```bash
-ssh <pi> 'git clone git@github.com:ubiquitousidea/picam-yolo.git ~/picam-yolo && bash ~/picam-yolo/scripts/setup_pi.sh'
+HOST=rpi ./scripts/deploy.sh
+ssh rpi 'bash ~/picam-yolo/scripts/setup_pi.sh'
 ```
 
-The repo is private, so cloning on a Pi requires a deploy key on that Pi;
-`scripts/deploy.sh` is the no-GitHub-credentials alternative.
+Cloning on the Pi instead would work but needs a deploy key there, since the
+repo is private. Do not assume the Pi can reach GitHub.
 
 `setup_pi.sh` is idempotent and safe to re-run: it skips apt packages already
 installed (the desktop image ships all of them), reuses the venv, and skips the
