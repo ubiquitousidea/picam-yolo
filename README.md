@@ -27,8 +27,13 @@ python3 -m venv .venv
 **A new Pi, from the git remote** — one command, nothing else needed:
 
 ```bash
-ssh rpi 'git clone <this-repo-url> ~/picam-yolo && bash ~/picam-yolo/scripts/setup_pi.sh'
+ssh rpi 'git clone git@github.com:ubiquitousidea/picam-yolo.git ~/picam-yolo && bash ~/picam-yolo/scripts/setup_pi.sh'
 ```
+
+The repo is private, so the Pi needs its own credentials to clone: generate a
+key on the Pi (`ssh-keygen -t ed25519`) and add the public half to GitHub as a
+deploy key. If you would rather not, `scripts/deploy.sh` rsyncs from a machine
+that already has the code and needs no GitHub access on the Pi at all.
 
 That installs the apt packages, builds the venv, fetches a CPU-only torch, and
 exports the NCNN model. It takes several minutes, mostly torch.

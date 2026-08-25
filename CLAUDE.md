@@ -198,8 +198,11 @@ The repo is source-only; the exported NCNN model is a build artifact and is
 deliberately not tracked. A fresh Pi bootstraps in one command:
 
 ```bash
-ssh <pi> 'git clone <repo-url> ~/picam-yolo && bash ~/picam-yolo/scripts/setup_pi.sh'
+ssh <pi> 'git clone git@github.com:ubiquitousidea/picam-yolo.git ~/picam-yolo && bash ~/picam-yolo/scripts/setup_pi.sh'
 ```
+
+The repo is private, so cloning on a Pi requires a deploy key on that Pi;
+`scripts/deploy.sh` is the no-GitHub-credentials alternative.
 
 `setup_pi.sh` is idempotent and safe to re-run: it skips apt packages already
 installed (the desktop image ships all of them), reuses the venv, and skips the
