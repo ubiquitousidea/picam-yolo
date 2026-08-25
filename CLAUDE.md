@@ -4,13 +4,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Two programs from one package. `picam_yolo.server` runs on a Raspberry Pi 5: it
-captures from every attached camera, runs YOLO object detection on-device, and
-publishes annotated-metadata + JPEG frames over ZeroMQ. `picam_yolo.client` runs
-on a desktop and draws those streams in native OpenCV windows.
+Three programs from one package. `picam_yolo.server` runs on a Raspberry Pi 5:
+it captures from every attached camera, runs YOLO object detection on-device,
+and publishes annotated-metadata + JPEG frames over ZeroMQ. `picam_yolo.client`
+runs on a desktop and draws those streams in native OpenCV windows.
+`picam_yolo.dogid` is a desktop-only workflow that identifies *which* dog, on
+top of the detector that already finds dogs.
 
-They install on different machines with different dependency sets (`[server]`
-and `[client]` extras) and share exactly one thing: `src/picam_yolo/protocol.py`.
+They install on different machines with different dependency sets (`[server]`,
+`[client]`, `[dogid]`). Server and client share exactly one thing:
+`src/picam_yolo/protocol.py`. `dogid` reads that wire format but never changes
+it — see its section below.
 
 ## Commands
 
@@ -38,6 +42,16 @@ ssh rpi 'REPO_DIR=$HOME/picam-yolo bash picam-yolo/scripts/setup_pi.sh'
 ./scripts/piservice.sh on | start | restart | status
 ```
 
+Dog re-identification (desktop only; see `src/picam_yolo/dogid/`):
+
+```bash
+python -m picam_yolo.dogid capture --host rpi --seconds 120
+python -m picam_yolo.dogid label                    # OpenCV GUI, AI-suggested
+python -m picam_yolo.dogid enrol --embedder torch
+python -m picam_yolo.dogid eval  --embedder torch --suggest-threshold
+python -m pytest tests/test_dogid.py                # no torch, no camera, no Pi
+```
+
 Exporting a model (run wherever torch is installed; the result is portable):
 
 ```bash
@@ -52,9 +66,10 @@ python -m picam_yolo.server --synthetic 2 --backend none --bind tcp://127.0.0.1:
 python -m picam_yolo.client --host 127.0.0.1 --port 5599
 ```
 
-There is no test suite yet. `--synthetic` + `--backend none` is the current
-smoke path; a real one belongs in `tests/` driving `protocol.py` round-trips and
-`draw_overlay` against a synthetic frame.
+`tests/` currently covers `dogid` only (`pytest tests/`, no torch or hardware
+required). `--synthetic` + `--backend none` remains the smoke path for the
+server and client; `protocol.py` round-trips and `draw_overlay` against a
+synthetic frame are still untested and are the obvious next additions.
 
 ## Architecture
 
@@ -73,6 +88,10 @@ Three seams are deliberate and worth preserving:
 - **`FrameSource` protocol** (`server/cameras.py`) — `PiCameraSource` and
   `SyntheticSource` are interchangeable, which is what makes hardware-free
   development possible.
+- **`Embedder` / `Gallery`** (`dogid/embed.py`, `dogid/gallery.py`) — the same
+  Protocol-plus-factory shape as `Detector`. `HashEmbedder` is the `NullDetector`
+  of this subsystem: no torch, no weights, so the dataset, labeller and CLI can
+  be exercised with nothing installed.
 - **`protocol.py`** — the only shared module. Detection boxes are published in
   pixel coordinates *of the JPEG payload*, so the client never learns the
   inference resolution or letterbox geometry. Change this file and both halves
@@ -361,6 +380,55 @@ is the single source of geometry shared by drawing and hit-testing. OpenCV's
 Cocoa backend has no widget toolkit, so the button is painted into the frame and
 driven by `setMouseCallback`; resizing the window can offset the hit area on
 some backends, which is why `r` also toggles.
+
+## Identifying individual dogs
+
+`picam_yolo.dogid` is a third component, installed on the **desktop only**
+(`[dogid]` extra). Two decisions shape it, and both were deliberate:
+
+**Two-stage, not a retrained detector.** The Pi's YOLO keeps answering "dog";
+a separate embedder maps the crop to a vector and a gallery of per-dog centroids
+names it. Folding per-dog classes into the detection head would mean a full
+retrain plus NCNN re-export for every new dog, hundreds of boxes each, and
+fine-grained identity from a nano model that sees a distant dog as ~60 px.
+Enrolment is instead arithmetic over ~20 crops, and `models/` never changes.
+
+**Identification runs on the client, not the Pi.** The client already receives
+the JPEG and the boxes, so it can crop and identify locally. `protocol.py` is
+untouched — no paired redeploy — and the board, which browns out at four cores
+and already spends ~50 ms of its frame budget on inference, does no extra work.
+Putting identity on the wire would need a `Detection.identity` field and a
+simultaneous redeploy of both halves; that is the seam if it ever becomes worth
+it.
+
+Non-obvious bits:
+
+- **Crops are content-addressed by SHA-1 of their JPEG bytes**, so re-running
+  `capture` is idempotent. The manifest is append-only JSONL and `load()` folds
+  it so later records win; a truncated last line is skipped rather than fatal,
+  because interrupting a long labelling session should not cost the manifest.
+- **Near-duplicate crops are dropped by dhash.** A sleeping dog otherwise
+  contributes hundreds of identical frames and the gallery becomes confident
+  about exactly one pose.
+- **`min_margin` matters as much as `min_similarity`.** Cosine similarity to the
+  nearest centroid runs high for *any* dog, so an absolute threshold alone
+  confidently misnames strangers. `__unknown__` and `__not_a_dog__` are enrolled
+  as a rejection class for the same reason — they are what turn "the detector
+  saw a cat" into a non-answer instead of a wrong answer.
+- **An accuracy assertion cannot detect a collapsed embedding space.** The first
+  `HashEmbedder` averaged H, S and V together, which put every crop within 0.001
+  cosine of every other; argmax was noise, yet the round-trip test still passed.
+  `test_embeddings_separate_different_dogs` asserts within-class vs
+  between-class separation directly, which is the property that actually
+  matters. Keep that test whenever the embedder changes.
+- **The gallery is embedder-specific.** Re-run `enrol` after any change of
+  backbone or weights; centroids built under the old weights are meaningless
+  under the new ones.
+
+`train.finetune()` is a deliberate skeleton — its docstring carries the intended
+shape. Run `eval` first: a pretrained backbone plus `enrol` is often enough, and
+metric learning is only worth it when the confusion matrix shows two dogs
+actually bleeding into each other.
 
 ## Conventions
 

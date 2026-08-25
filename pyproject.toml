@@ -11,10 +11,16 @@ dependencies = ["pyzmq>=25", "numpy>=1.24"]
 [project.optional-dependencies]
 server = ["ultralytics>=8.3", "ncnn>=1.0.2024"]
 client = ["opencv-python>=4.9"]
+# Dog re-identification. Installs on the dev machine only -- never the Pi, which
+# has neither the power budget for training nor any need for the labelling GUI.
+# torch/torchvision are optional even here: the `hash` embedder exercises the
+# whole pipeline without them.
+dogid = ["opencv-python>=4.9", "torch>=2.2", "torchvision>=0.17"]
 
 [project.scripts]
 picam-yolo-server = "picam_yolo.server.__main__:main"
 picam-yolo-client = "picam_yolo.client.__main__:main"
+picam-yolo-dogid = "picam_yolo.dogid.__main__:main"
 
 [build-system]
 requires = ["setuptools>=68"]

@@ -139,6 +139,47 @@ as a missing model. Output goes to `run.log` rather than the journal, because
 this Pi keeps no user journal; the file grows unbounded, so truncate it if that
 ever matters.
 
+## Identifying individual dogs
+
+The Pi's YOLO answers "there is a dog". `picam_yolo.dogid` answers "that is Rex".
+
+It does **not** retrain the detector. A second stage embeds the dog crop and
+matches it against a gallery of enrolled dogs, so adding a new dog is enrolling
+~20 crops rather than a training run, and the Pi's NCNN model never changes.
+Everything here runs on the desktop -- the board has neither the power budget
+nor any need for a labelling GUI.
+
+```bash
+pip install -e '.[dogid]'
+
+python -m picam_yolo.dogid capture --host rpi --seconds 120   # harvest crops
+python -m picam_yolo.dogid label                              # assign names
+python -m picam_yolo.dogid enrol --embedder torch             # build the gallery
+python -m picam_yolo.dogid eval --embedder torch --suggest-threshold
+python -m picam_yolo.dogid stats
+```
+
+`capture` costs the Pi nothing: the boxes already travel in `FrameHeader`, so it
+subscribes to the stream the server is already publishing and cuts out the crops
+YOLO already found. Near-duplicate frames are dropped by perceptual hash -- a
+sleeping dog otherwise contributes hundreds of identical crops that make the
+gallery confident about exactly one pose.
+
+`label` proposes and you confirm: once any gallery exists each crop arrives with
+a suggested name and Enter accepts it, so only the disagreements cost attention.
+Crops are ordered least-confident-first, because 200 well-chosen labels beat
+2000 arbitrary ones. Keys: digits assign an enrolled dog, `n` types a new name,
+`u` marks an unfamiliar dog, `x` marks a bad detection, `b` steps back.
+
+`--embedder hash` needs no torch and exists to smoke-test the pipeline without
+a model, the way `--backend none` does on the server. It is not good enough to
+tell two brown terriers apart; use `--embedder torch` for real work.
+
+Start with `enrol` on a pretrained backbone and read `eval`. ImageNet features
+separate visually distinct dogs well enough that no training may be needed at
+all. `finetune` (a skeleton) is only worth building when the confusion matrix
+shows two specific dogs bleeding into each other.
+
 ## Tuning
 
 CPU-only inference is the bottleneck. In rough order of effect:
