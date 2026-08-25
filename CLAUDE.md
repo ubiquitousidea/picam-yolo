@@ -159,9 +159,40 @@ needs threading through `PiCameraSource.start()`. Not yet implemented.
 
 Measured, capture-only (`--backend none`, 1280x720): a steady **30.0 fps**, with
 capture ~24.6 ms and JPEG encode ~8.7 ms per frame, at 39 °C. Capture plus encode
-therefore already fill the 33 ms budget of a 30 fps frame interval — inference is
-the limiter, and `--detect-every` is the knob that matters. **Inference
-throughput has not yet been measured.**
+therefore already fill the 33 ms budget of a 30 fps frame interval, and
+`--detect-every` is the knob that matters.
+
+Measured 2026-08-25 at **full sensor resolution** (`--size 4056x3040 --imgsz 416`,
+NCNN, pinned to cores 0,1 by the user unit): a steady **6.2–6.3 fps** over four
+minutes at 58 °C, `throttled=0x0`, no reboot. Per frame: capture ~13 ms, **infer
+~52 ms**, encode ~93 ms. Two things this settles:
+
+- **Inference is ~52 ms/frame** on two pinned cores at imgsz 416 — about 19 fps
+  if it ran alone. At full resolution it is *not* the limiter; **JPEG encode is**,
+  at ~93 ms. Encode scales with pixel count, inference does not (the frame is
+  letterboxed to `--imgsz` regardless).
+- Capture *time* falls with resolution (24.6 ms → 13 ms) because `capture_array`
+  mostly blocks waiting for the next frame. At 6 fps a frame is already waiting,
+  so the number measures idle time, not data volume. Do not read it as "bigger
+  frames capture faster".
+
+Measured the same day at **2028x1520** (3.08 MP, a native 2x2-binned mode, so
+the ISP does no rescaling and the full 4:3 FOV is kept) — the current setting:
+a steady **12.9 fps** at 58 °C, `throttled=0x0`. Per frame: capture ~3.8 ms,
+infer ~49 ms, encode ~23.5 ms. Quartering the pixels roughly quartered the
+encode and doubled the frame rate, exactly as the pixel-count model predicts,
+and **inference is the limiter again** at ~49 of the ~77 ms budget. From here
+`--detect-every 2` is the next real gain, not a smaller frame.
+
+**The link saturates at roughly 25 Mbit/s, and that bites before CPU does.**
+At 4056x3040 / q80 a frame is ~830 KiB; the server published 6.2 fps but a
+wifi subscriber received only **3.3**. Note the frames were *not* dropped —
+sequence numbers arrived consecutive, so the subscriber was falling behind into
+a backlog on a saturated link, which surfaces as latency and (once the PUB HWM
+fills) eventual drops. At 2028x1520 a frame is ~224 KiB and the receiver keeps
+up exactly, consecutive and in real time. Past roughly 3 MP you are buying
+pixels the client cannot receive in time unless `--jpeg-quality` comes down or
+the link is wired.
 
 **This board reboots under multi-core CPU load. This is the dominant
 constraint on all work here.** Confirmed three times: a YOLO server run, a
@@ -181,6 +212,13 @@ OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 taskset -c 0 nice -n 10 .venv/bin/python scr
 Apply the same shape to the server (`taskset -c 0,1 --threads 1`) until the
 power problem is fixed. **Inference throughput on unconstrained cores remains
 unmeasured** — every attempt has crashed the board.
+
+Two-core pinning appears to be a real fix, not just a mitigation: a four-minute
+run at full sensor resolution (the heaviest load yet attempted) held
+`throttled=0x0` at 58 °C and did not reboot. Note `0x0`, not the `0x50000` this
+box used to report — no under-voltage flagged since the 2026-08-25 17:51 boot.
+Encouraging, but one clean run is not proof; treat unpinned multi-core load as
+still unsafe.
 
 **Every crash zeroes recently written files.** ext4 replays its journal and
 leaves 0-byte stubs. This has already destroyed an exported model (10 MB → 0 B,
