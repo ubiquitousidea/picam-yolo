@@ -182,17 +182,29 @@ a steady **12.9 fps** at 58 °C, `throttled=0x0`. Per frame: capture ~3.8 ms,
 infer ~49 ms, encode ~23.5 ms. Quartering the pixels roughly quartered the
 encode and doubled the frame rate, exactly as the pixel-count model predicts,
 and **inference is the limiter again** at ~49 of the ~77 ms budget. From here
-`--detect-every 2` is the next real gain, not a smaller frame.
+`--detect-every 2` is the next real gain, not a smaller frame: it lifts the
+server to **19.1 fps** (inference every other frame, boxes reused between), still
+on two cores and still `throttled=0x0`.
 
-**The link saturates at roughly 25 Mbit/s, and that bites before CPU does.**
-At 4056x3040 / q80 a frame is ~830 KiB; the server published 6.2 fps but a
-wifi subscriber received only **3.3**. Note the frames were *not* dropped —
-sequence numbers arrived consecutive, so the subscriber was falling behind into
-a backlog on a saturated link, which surfaces as latency and (once the PUB HWM
-fills) eventual drops. At 2028x1520 a frame is ~224 KiB and the receiver keeps
-up exactly, consecutive and in real time. Past roughly 3 MP you are buying
-pixels the client cannot receive in time unless `--jpeg-quality` comes down or
-the link is wired.
+**But server fps is not delivered fps.** At q80 that 19 fps stream needs ~40
+Mbit/s and the link gives ~29, so 28 % of frames were dropped and the client saw
+13.1 -- no better than before. Adding `--jpeg-quality 60` cuts frames from ~270
+to ~190 KiB, which fits, and the client then receives **18.8 fps with zero gaps**.
+The pairing is the point: `--detect-every` and `--jpeg-quality` must move
+together, or the extra frames are generated only to be discarded in flight.
+
+**The wifi link tops out at ~29 Mbit/s, and that binds before CPU does.**
+Two independent saturated runs measured 28.9 and 29.2 Mbit/s. It is a *byte*
+budget, not a frame budget: delivered fps is roughly `29 Mbit/s / bytes-per-frame`,
+whatever the server manages to publish. Server-side fps above that line converts
+entirely into dropped frames.
+
+**Measure delivered rate over a window, after a warmup.** A subscriber is handed
+its backlog as a burst on join, so a short sample reads far too high -- one
+8-frame sample of this stream showed "48.8 Mbit/s, no gaps" where a 9-second
+sample of the *same* stream showed 28.9 Mbit/s and **28 % of frames missing**.
+Same trap `client/recorder.py` documents for frame-rate estimation. Compare
+`FrameHeader.seq` spans against the received count; rate alone hides drops.
 
 **This board reboots under multi-core CPU load. This is the dominant
 constraint on all work here.** Confirmed three times: a YOLO server run, a
@@ -213,12 +225,35 @@ Apply the same shape to the server (`taskset -c 0,1 --threads 1`) until the
 power problem is fixed. **Inference throughput on unconstrained cores remains
 unmeasured** — every attempt has crashed the board.
 
-Two-core pinning appears to be a real fix, not just a mitigation: a four-minute
-run at full sensor resolution (the heaviest load yet attempted) held
-`throttled=0x0` at 58 °C and did not reboot. Note `0x0`, not the `0x50000` this
-box used to report — no under-voltage flagged since the 2026-08-25 17:51 boot.
-Encouraging, but one clean run is not proof; treat unpinned multi-core load as
-still unsafe.
+**The supply is the root cause, and it is now measured.** The powerbank in use
+on 2026-08-25 advertises these USB-PD profiles: 5 V/2.4 A (12 W), 9 V/2.22 A,
+12 V/1.67 A, PPS 3.3-11 V/2 A. **The Pi 5 draws only from the 5 V rail**, so the
+bank's headline 20 W is unreachable and the real budget is **12 W** -- under half
+the 25 W an official Pi 5 supply provides. Firmware agrees:
+`/sys/firmware/devicetree/base/chosen/power/max_current` reads 3000 (the
+conservative fallback) and `usb_max_current_enable` is 0. A supply that
+negotiates 5 V/5 A makes `max_current` read 5000; that is the check worth
+running on any replacement.
+
+Measured draw on two cores: board total ~5.4 W, of which VDD_CORE is 2.7 W
+median but **5.4 W peak** -- brownout is driven by the peak, not the average.
+Doubling the core term projects ~2.9 A at 5 V against a 2.4 A limit.
+
+**Four cores was tried on 2026-08-25 and rebooted the board in under a minute**,
+confirming that projection. Two findings from it:
+
+- It is not worth retrying even with a bigger supply. The one surviving 4-core
+  sample managed **15.4 fps against 12.9 on two cores -- about 20 %** -- because
+  NCNN already saturates two cores at imgsz 416. `--detect-every 2` beats that
+  comfortably on two cores at no stability cost.
+- **Never park an experimental config in the unit.** The drop-in that enabled
+  four cores survived the reboot it caused, and the enabled unit auto-started
+  straight back into it -- a crash loop, caught only by hand. Test risky
+  settings with a one-shot foreground run, not a persistent unit change.
+
+Two-core pinning otherwise holds: four minutes at full sensor resolution kept
+`throttled=0x0` at 58 C. Note that `get_throttled` resets at boot, so a crash
+leaves no forensic trace -- the `0x0` seen after a reboot means nothing.
 
 **Every crash zeroes recently written files.** ext4 replays its journal and
 leaves 0-byte stubs. This has already destroyed an exported model (10 MB → 0 B,
