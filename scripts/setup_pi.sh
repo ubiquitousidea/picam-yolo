@@ -38,6 +38,29 @@ echo "==> torch (CPU-only build)"
 echo "==> server dependencies"
 "$VENV/bin/pip" install -e "$REPO_DIR[server]"
 
+# --- model ------------------------------------------------------------------
+# The exported NCNN model is a build artifact, so a fresh clone will not have
+# one. Export it here unless the caller supplied it another way.
+MODEL_DIR="$REPO_DIR/models/yolo11n_ncnn_model"
+IMGSZ="${IMGSZ:-416}"
+
+if [[ "${SKIP_MODEL:-0}" == "1" ]]; then
+  echo "==> skipping model export (SKIP_MODEL=1)"
+elif [[ -s "$MODEL_DIR/model.ncnn.param" && -s "$MODEL_DIR/model.ncnn.bin" ]]; then
+  echo "==> model already present at $MODEL_DIR"
+else
+  # Pinned to one core on purpose. A 4-core export browns out an
+  # under-powered Pi 5, and the resulting hard reboot leaves the half-written
+  # model as 0-byte files. Single-core is slower but has completed reliably.
+  echo "==> exporting NCNN model at imgsz=$IMGSZ (single core; takes a few minutes)"
+  ( cd "$REPO_DIR" && OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+      taskset -c 0 nice -n 10 "$VENV/bin/python" scripts/export_model.py --imgsz "$IMGSZ" )
+  sync   # flush before anything else can trigger a brownout
+fi
+
 echo
 echo "done. Verify with:"
 echo "  $VENV/bin/python -c 'from picamera2 import Picamera2; print(Picamera2.global_camera_info())'"
+echo
+echo "Run the server:"
+echo "  cd $REPO_DIR && .venv/bin/python -m picam_yolo.server --model models/yolo11n_ncnn_model --imgsz $IMGSZ"

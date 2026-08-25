@@ -24,16 +24,26 @@ python3 -m venv .venv
 .venv/bin/pip install -e '.[client]'
 ```
 
-**Pi** (assumes an SSH host alias `rpi`):
+**A new Pi, from the git remote** — one command, nothing else needed:
 
 ```bash
-HOST=rpi ./scripts/deploy.sh
-ssh rpi 'REPO_DIR=$HOME/picam-yolo bash picam-yolo/scripts/setup_pi.sh'
-ssh rpi 'cd picam-yolo && .venv/bin/python scripts/export_model.py --imgsz 416'
+ssh rpi 'git clone <this-repo-url> ~/picam-yolo && bash ~/picam-yolo/scripts/setup_pi.sh'
 ```
 
-The setup script installs a CPU-only torch, so it does not drag the NVIDIA CUDA
-stack onto a Pi. It takes a few minutes.
+That installs the apt packages, builds the venv, fetches a CPU-only torch, and
+exports the NCNN model. It takes several minutes, mostly torch.
+
+**Pushing local changes to a Pi you already set up** (assumes SSH alias `rpi`):
+
+```bash
+HOST=rpi ./scripts/deploy.sh              # code only
+WITH_MODELS=1 HOST=rpi ./scripts/deploy.sh # ...and a locally exported model
+```
+
+Useful knobs for `setup_pi.sh`: `REPO_DIR` (default `~/picam-yolo`), `IMGSZ`
+(default 416), and `SKIP_MODEL=1` if you intend to rsync a model over instead.
+The model export is pinned to a single core deliberately — a 4-core export
+browns out an under-powered Pi 5, and the reboot leaves a truncated model.
 
 ## Run
 

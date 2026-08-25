@@ -192,6 +192,26 @@ four files) and `.venv/bin/pnnx`. Consequences worth remembering:
   non-empty at startup, because a truncated model otherwise surfaces as
   `IndexError` deep inside Ultralytics' NCNN backend.
 
+## Provisioning a new Pi
+
+The repo is source-only; the exported NCNN model is a build artifact and is
+deliberately not tracked. A fresh Pi bootstraps in one command:
+
+```bash
+ssh <pi> 'git clone <repo-url> ~/picam-yolo && bash ~/picam-yolo/scripts/setup_pi.sh'
+```
+
+`setup_pi.sh` is idempotent and safe to re-run: it skips apt packages already
+installed (the desktop image ships all of them), reuses the venv, and skips the
+model export if a non-empty model is already present. Knobs: `REPO_DIR`
+(default `~/picam-yolo`), `IMGSZ` (default 416, and it must match the server's
+`--imgsz`), `SKIP_MODEL=1` to rsync a model in instead.
+
+The export step is pinned to a single core on purpose — see the power section.
+`scripts/deploy.sh` remains the fast path for pushing local edits to a Pi that
+is already set up; it is rsync-from-dev-machine, not a provisioning tool, and
+excludes `models/` unless `WITH_MODELS=1`.
+
 ## Recording
 
 `StreamRecorder` (`client/recorder.py`) opens one `cv2.VideoWriter` per camera,
