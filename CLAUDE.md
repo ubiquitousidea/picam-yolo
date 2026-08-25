@@ -203,8 +203,9 @@ HOST=rpi ./scripts/deploy.sh
 ssh rpi 'bash ~/picam-yolo/scripts/setup_pi.sh'
 ```
 
-Cloning on the Pi instead would work but needs a deploy key there, since the
-repo is private. Do not assume the Pi can reach GitHub.
+Cloning on the Pi works as well — the repo is public, so no credentials are
+needed there — but rsync remains primary because it carries uncommitted work
+that a clone cannot.
 
 `setup_pi.sh` is idempotent and safe to re-run: it skips apt packages already
 installed (the desktop image ships all of them), reuses the venv, and skips the

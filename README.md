@@ -49,9 +49,15 @@ to rsync a model over instead. The model export is pinned to a single core
 deliberately — a 4-core export browns out an under-powered Pi 5, and the reboot
 leaves a truncated model behind.
 
-Cloning this repo directly on the Pi also works, but the repo is private, so
-that route needs a deploy key on the Pi. `deploy.sh` needs no GitHub access
-there at all.
+Cloning this repo directly on the Pi works too, and needs no credentials now
+that it is public:
+
+```bash
+ssh rpi 'git clone https://github.com/ubiquitousidea/picam-yolo.git ~/picam-yolo && bash ~/picam-yolo/scripts/setup_pi.sh'
+```
+
+`deploy.sh` stays the primary path because it pushes uncommitted work in
+progress, which a clone cannot.
 
 ## Run
 
