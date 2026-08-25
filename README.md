@@ -101,22 +101,28 @@ load. Recording stops and finalises the file on quit or Ctrl-C.
 ## Run at boot
 
 ```bash
-ssh rpi 'sudo bash ~/picam-yolo/scripts/install_service.sh'
+ssh rpi 'bash ~/picam-yolo/scripts/install_user_service.sh'
 ```
 
-Installs and enables `picam-yolo.service`. Arguments live in
-`/etc/default/picam-yolo`, so retuning does not mean editing the unit:
+A **user** service, so it needs no root — handy on a Pi where `sudo` wants a
+password and a TTY. It enables lingering so the unit starts at boot without a
+login session.
 
 ```bash
-sudo nano /etc/default/picam-yolo     # e.g. add --detect-every 2
-sudo systemctl restart picam-yolo
-journalctl -u picam-yolo -f           # live log
-sudo systemctl disable --now picam-yolo
+nano ~/.config/picam-yolo.env          # e.g. add --detect-every 2
+systemctl --user restart picam-yolo
+tail -f ~/picam-yolo/run.log           # live log
+systemctl --user disable --now picam-yolo
 ```
 
-The unit pins the server to two cores (`CPUAffinity=0 1`) for the reason given
-under Tuning, and gives up after 5 failed starts in 5 minutes rather than
-crash-looping on a permanent fault such as a missing model.
+Where passwordless sudo is available, `scripts/install_service.sh` installs the
+equivalent system unit instead (config in `/etc/default/picam-yolo`).
+
+Both pin the server to two cores for the reason given under Tuning, and give up
+after repeated failed starts rather than crash-looping on a permanent fault such
+as a missing model. Output goes to `run.log` rather than the journal, because
+this Pi keeps no user journal; the file grows unbounded, so truncate it if that
+ever matters.
 
 ## Tuning
 

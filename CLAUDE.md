@@ -227,9 +227,22 @@ hardcoding `/home/pi`. Arguments come from `/etc/default/picam-yolo` via
 `CPUAffinity=0 1` for brownout protection and `StartLimitBurst=5` so a
 permanent fault fails visibly instead of crash-looping.
 
-`sudo` on this Pi requires a password and a TTY, so the service cannot be
-installed over a non-interactive `ssh`. That is why installation is a script the
-user runs, not something the deploy flow does.
+`sudo` on this Pi requires a password and a TTY, so a system unit cannot be
+installed over a non-interactive `ssh` — `ssh -t` does not help when stdin is
+itself not a terminal. `scripts/install_user_service.sh` is therefore the path
+that actually works here: a user unit needs no root, and `loginctl
+enable-linger` succeeds unprivileged on this box, which is what makes a user
+unit start at boot without a login session.
+
+Two consequences for user units specifically: use `taskset` in `ExecStart`
+rather than the `CPUAffinity=` directive (narrowing your own affinity needs no
+privileges; the directive can be refused in a user manager), and set
+`XDG_RUNTIME_DIR` before calling `systemctl --user` over ssh, since a
+non-interactive session has no login session to point at the user manager.
+
+This Pi keeps **no user journal** — `journalctl --user -u picam-yolo` reports
+"No journal files were found" — so the unit appends stdout/stderr to
+`run.log`, which is also what `scripts/piserver.sh log` tails.
 
 **`ssh -f` must have its stdout redirected.** It backgrounds the client but
 keeps it alive for the life of the remote command, so an inherited pipe never
