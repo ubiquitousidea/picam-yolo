@@ -1,0 +1,24 @@
+[project]
+name = "picam-yolo"
+version = "0.1.0"
+description = "Multi-camera Raspberry Pi capture with YOLO detection, streamed to a desktop viewer"
+requires-python = ">=3.11"
+dependencies = ["pyzmq>=25", "numpy>=1.24"]
+
+# The two halves of this project install on different machines and deliberately
+# do not share heavy dependencies. The Pi gets picamera2 + simplejpeg from the
+# system site-packages (apt), never from pip -- see scripts/setup_pi.sh.
+[project.optional-dependencies]
+server = ["ultralytics>=8.3", "ncnn>=1.0.2024"]
+client = ["opencv-python>=4.9"]
+
+[project.scripts]
+picam-yolo-server = "picam_yolo.server.__main__:main"
+picam-yolo-client = "picam_yolo.client.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

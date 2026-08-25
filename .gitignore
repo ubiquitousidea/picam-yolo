@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.DS_Store
+
+# Exported/downloaded weights are large and reproducible via scripts/export_model.py
+models/*
+!models/.gitkeep
+
+# Recorded clips
+recordings/
