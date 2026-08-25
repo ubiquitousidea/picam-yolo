@@ -57,24 +57,34 @@ case "$cmd" in
     fi
 
     printf 'starting: %s\n' "${args[*]}"
-    ssh -f -n "$HOST" "cd $REMOTE_DIR && setsid ${prefix}.venv/bin/python -u -m picam_yolo.server ${args[*]} > run.log 2>&1 < /dev/null"
+    # The backgrounded ssh must not inherit our stdout: -f keeps the client
+    # alive for the life of the remote command, so an inherited pipe never sees
+    # EOF and any `piserver.sh start | tail` hangs forever with no output.
+    ssh -f -n "$HOST" "cd $REMOTE_DIR && setsid ${prefix}.venv/bin/python -u -m picam_yolo.server ${args[*]} > run.log 2>&1 < /dev/null" >/dev/null 2>&1
 
     # Confirm it actually came up rather than reporting optimistic success.
-    for _ in $(seq 120); do
-      if ssh -n "$HOST" "grep -q 'publishing on' $LOG 2>/dev/null"; then
+    # The wait runs entirely on the Pi: polling from here opened a fresh SSH
+    # connection per iteration, and the handshakes alone stretched a two-second
+    # startup into minutes of apparent hang.
+    outcome=$(ssh -n "$HOST" "for i in \$(seq 120); do
+        grep -q 'publishing on' '$LOG' 2>/dev/null && { echo UP; exit 0; }
+        grep -qE 'ERROR|Traceback' '$LOG' 2>/dev/null && { echo FAIL; exit 0; }
+        sleep 0.5
+      done; echo TIMEOUT")
+
+    case "$outcome" in
+      UP)
         echo "server up:"
-        ssh -n "$HOST" "grep -aE 'using [0-9]+ camera|publishing on' $LOG | tail -3"
-        exit 0
-      fi
-      if ssh -n "$HOST" "grep -qE 'ERROR|Traceback' $LOG 2>/dev/null"; then
+        ssh -n "$HOST" "grep -aE 'using [0-9]+ camera|publishing on' '$LOG' | tail -3"
+        exit 0 ;;
+      FAIL)
         echo "server failed to start:" >&2
-        ssh -n "$HOST" "grep -avE 'libcamera|libpisp|IPAProxy|camera_manager|pisp.cpp' $LOG | tail -15" >&2
-        exit 1
-      fi
-      sleep 0.5
-    done
-    echo "timed out after 60s waiting for startup; check: $0 log" >&2
-    exit 1
+        ssh -n "$HOST" "grep -avE 'libcamera|libpisp|IPAProxy|camera_manager|pisp.cpp' '$LOG' | tail -15" >&2
+        exit 1 ;;
+      *)
+        echo "timed out after 60s waiting for startup; check: $0 log" >&2
+        exit 1 ;;
+    esac
     ;;
 
   *)

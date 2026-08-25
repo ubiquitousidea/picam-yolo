@@ -218,6 +218,25 @@ The export step is pinned to a single core on purpose — see the power section.
 is already set up; it is rsync-from-dev-machine, not a provisioning tool, and
 excludes `models/` unless `WITH_MODELS=1`.
 
+## Running as a service
+
+`scripts/install_service.sh` (run with sudo on the Pi) generates
+`picam-yolo.service` from the invoking user and their checkout rather than
+hardcoding `/home/pi`. Arguments come from `/etc/default/picam-yolo` via
+`EnvironmentFile`, so the unit itself rarely needs editing. It sets
+`CPUAffinity=0 1` for brownout protection and `StartLimitBurst=5` so a
+permanent fault fails visibly instead of crash-looping.
+
+`sudo` on this Pi requires a password and a TTY, so the service cannot be
+installed over a non-interactive `ssh`. That is why installation is a script the
+user runs, not something the deploy flow does.
+
+**`ssh -f` must have its stdout redirected.** It backgrounds the client but
+keeps it alive for the life of the remote command, so an inherited pipe never
+reaches EOF — `piserver.sh start | tail` hung indefinitely, printing nothing,
+until `>/dev/null 2>&1` was added to the detached launch. The same trap applies
+to any backgrounded ssh in a script whose output might be piped.
+
 ## Recording
 
 `StreamRecorder` (`client/recorder.py`) opens one `cv2.VideoWriter` per camera,

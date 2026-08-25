@@ -98,6 +98,26 @@ The file's frame rate is measured from the publisher's capture timestamps, so a
 clip plays back at true speed even though the stream rate varies with inference
 load. Recording stops and finalises the file on quit or Ctrl-C.
 
+## Run at boot
+
+```bash
+ssh rpi 'sudo bash ~/picam-yolo/scripts/install_service.sh'
+```
+
+Installs and enables `picam-yolo.service`. Arguments live in
+`/etc/default/picam-yolo`, so retuning does not mean editing the unit:
+
+```bash
+sudo nano /etc/default/picam-yolo     # e.g. add --detect-every 2
+sudo systemctl restart picam-yolo
+journalctl -u picam-yolo -f           # live log
+sudo systemctl disable --now picam-yolo
+```
+
+The unit pins the server to two cores (`CPUAffinity=0 1`) for the reason given
+under Tuning, and gives up after 5 failed starts in 5 minutes rather than
+crash-looping on a permanent fault such as a missing model.
+
 ## Tuning
 
 CPU-only inference is the bottleneck. In rough order of effect:
