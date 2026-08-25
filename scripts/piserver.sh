@@ -18,13 +18,27 @@ LOG="$REMOTE_DIR/run.log"
 # The [p] is load-bearing: a plain `pkill -f picam_yolo.server` also matches the
 # `bash -c` wrapper carrying the pattern and kills its own SSH session.
 PATTERN='[p]icam_yolo.server'
+UNIT="${UNIT:-picam-yolo.service}"
+# systemctl --user over a non-interactive ssh has no login session to infer the
+# user manager's socket from. Single quotes: this expands on the Pi, not here.
+UCTL='XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)} systemctl --user'
+
+# True when the systemd unit -- not a hand-started run -- owns the server.
+unit_owns_server() { ssh -n "$HOST" "$UCTL is-active --quiet $UNIT" 2>/dev/null; }
 
 cmd="${1:-start}"; shift || true
 
 case "$cmd" in
   stop)
-    ssh -n "$HOST" "pkill -f '$PATTERN' || true"
-    echo "stop signalled"
+    # Restart=always means a bare pkill is undone five seconds later, so when
+    # the unit owns the server, stopping the unit is the only thing that sticks.
+    if unit_owns_server; then
+      ssh -n "$HOST" "$UCTL stop $UNIT"
+      echo "stopped $UNIT (the unit owned this server; see scripts/piservice.sh)"
+    else
+      ssh -n "$HOST" "pkill -f '$PATTERN' || true"
+      echo "stop signalled"
+    fi
     ;;
 
   status)
@@ -39,6 +53,14 @@ case "$cmd" in
     args=("$@")
     if [[ ${#args[@]} -eq 0 ]]; then
       args=(--backend none --size 1280x720)
+    fi
+
+    # Racing the unit for port 5555 is unwinnable: pkill, then systemd
+    # restarts it and takes the port back before this launch binds.
+    if unit_owns_server; then
+      echo "$UNIT is running the server; stop it first:" >&2
+      echo "  ./scripts/piservice.sh stop" >&2
+      exit 1
     fi
 
     ssh -n "$HOST" "pkill -f '$PATTERN' || true"

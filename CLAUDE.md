@@ -32,6 +32,10 @@ ssh rpi 'REPO_DIR=$HOME/picam-yolo bash picam-yolo/scripts/setup_pi.sh'
 ./scripts/piserver.sh start --backend none                # video only, no inference
 ./scripts/piserver.sh start --model models/yolo11n_ncnn_model --imgsz 416
 ./scripts/piserver.sh log -f | status | stop
+
+./scripts/piservice.sh stop               # stop the systemd unit (returns at boot)
+./scripts/piservice.sh off                # stop and disable (stays off)
+./scripts/piservice.sh on | start | restart | status
 ```
 
 Exporting a model (run wherever torch is installed; the result is portable):
@@ -239,6 +243,19 @@ rather than the `CPUAffinity=` directive (narrowing your own affinity needs no
 privileges; the directive can be refused in a user manager), and set
 `XDG_RUNTIME_DIR` before calling `systemctl --user` over ssh, since a
 non-interactive session has no login session to point at the user manager.
+
+`scripts/piservice.sh` drives that unit from the dev machine. It is the right
+tool whenever the unit is installed: `Restart=always` means `piserver.sh stop`'s
+`pkill` is undone five seconds later, so the process reappears and the stop
+looks like it did nothing. `piserver.sh` now detects an active unit and stops it
+properly, and refuses to `start` against one rather than losing a race for port
+5555. Distinguish `stop` (unit stays enabled, returns at the next boot — which
+on this board happens on its own) from `off` (`disable --now`, stays off).
+
+Confirming a unit start means reading only the log lines *that start* appended:
+the unit uses `StandardOutput=append:`, unlike `piserver.sh start` which
+truncates `run.log`, so an unanchored `grep 'publishing on'` matches a stale
+line from a previous run and confirms a start that in fact failed.
 
 This Pi keeps **no user journal** — `journalctl --user -u picam-yolo` reports
 "No journal files were found" — so the unit appends stdout/stderr to

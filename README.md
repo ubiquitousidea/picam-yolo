@@ -115,6 +115,21 @@ tail -f ~/picam-yolo/run.log           # live log
 systemctl --user disable --now picam-yolo
 ```
 
+`scripts/piservice.sh` drives that unit from the dev machine, so idling the Pi
+does not need an interactive login:
+
+```bash
+./scripts/piservice.sh stop            # stop now -- returns at the next boot
+./scripts/piservice.sh off             # stop *and* disable -- stays off
+./scripts/piservice.sh on              # enable and start again
+./scripts/piservice.sh status          # active / enabled / pid
+```
+
+Stopping the unit is what actually drops the Pi's power draw: capture and NCNN
+inference are what keep two cores busy, and both end with the process. Note the
+difference between `stop` and `off` — a stopped-but-enabled unit comes back at
+the next boot, which on this board can happen on its own.
+
 Where passwordless sudo is available, `scripts/install_service.sh` installs the
 equivalent system unit instead (config in `/etc/default/picam-yolo`).
 
