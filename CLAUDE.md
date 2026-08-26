@@ -508,6 +508,11 @@ Non-obvious bits:
 - **Near-duplicate crops are dropped by dhash.** A sleeping dog otherwise
   contributes hundreds of identical frames and the gallery becomes confident
   about exactly one pose.
+- **Labelling order inverts once a gallery exists.** Before one, show the
+  *most* confident crops: they are the clean full-body shots the first centroids
+  get built from. After one, show the least certain, which are the crops that
+  move the boundary. `order_for_labelling` picks on `auto`; getting it backwards
+  is costly, since everything downstream rests on those first centroids.
 - **"Unusable" and "negative" are different labels, and conflating them poisons
   the gallery.** `m` writes `__discard__` for a crop that cannot be used: two
   dogs inside one padded box, a motion smear, a dog half out of frame. It is
