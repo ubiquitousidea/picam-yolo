@@ -347,3 +347,46 @@ def test_uncertain_order_uses_the_gallery_margin(tmp_path):
     ordered = order_for_labelling(pending, ds, embedder, gallery, "uncertain")
     margins = [gallery.match(embedder.embed([ds.image(r.crop_id)])[0]).margin for r in ordered]
     assert margins == sorted(margins)
+
+
+# -- CLI argument positions ------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--embedder", "torch", "enrol"],
+        ["enrol", "--embedder", "torch"],
+    ],
+)
+def test_shared_options_work_on_either_side_of_the_subcommand(argv):
+    """`--embedder torch enrol` and `enrol --embedder torch` must agree.
+
+    argparse binds an option to the parser that declares it, so declaring these
+    only on the main parser rejected them after the subcommand -- where they
+    read most naturally.
+    """
+    from picam_yolo.dogid.__main__ import build_parser
+
+    assert build_parser().parse_args(argv).embedder == "torch"
+
+
+def test_subparser_default_does_not_clobber_a_leading_value():
+    """The trap in declaring an option twice: without SUPPRESS the subparser's
+    own default overwrites what the main parser already stored, so
+    `--embedder torch enrol` would silently fall back to 'hash'."""
+    from picam_yolo.dogid.__main__ import build_parser
+
+    args = build_parser().parse_args(["--embedder", "torch", "enrol"])
+    assert args.embedder == "torch"
+    assert build_parser().parse_args(["enrol"]).embedder == "hash"
+
+
+def test_shared_options_keep_their_defaults(tmp_path):
+    from picam_yolo.dogid.__main__ import build_parser
+
+    args = build_parser().parse_args(["stats"])
+    assert args.root == Path("dogid")
+    assert args.verbose is False
+    assert build_parser().parse_args(["stats", "-v"]).verbose is True
+    assert build_parser().parse_args(["-v", "stats"]).verbose is True

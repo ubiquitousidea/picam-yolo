@@ -135,21 +135,45 @@ def cmd_stats(args) -> int:
     return 0
 
 
+def _common_options(suppress: bool) -> argparse.ArgumentParser:
+    """Options accepted both before and after the subcommand.
+
+    argparse binds an option to the parser that declares it, so a `--embedder`
+    declared only on the main parser is rejected *after* the subcommand -- which
+    is exactly where it reads most naturally, and it caught us twice. Declaring
+    them in both places fixes that, with one catch: a subparser's default would
+    overwrite whatever the main parser already stored, so
+    `--embedder torch enrol` would silently revert to "hash". `SUPPRESS` is what
+    stops the second copy from writing anything the user did not actually type.
+    """
+    p = argparse.ArgumentParser(add_help=False)
+
+    def dflt(value):
+        return argparse.SUPPRESS if suppress else value
+
+    p.add_argument("--root", type=Path, default=dflt(DEFAULT_ROOT), help="dataset directory")
+    p.add_argument("--gallery", type=Path, default=dflt(None), help="default: <root>/gallery.npz")
+    p.add_argument("--embedder", choices=("hash", "torch"), default=dflt("hash"),
+                   help="'hash' needs no torch and is for smoke-testing only")
+    p.add_argument("--arch", default=dflt("mobilenet_v3_small"))
+    p.add_argument("--weights", default=dflt(None), help="fine-tuned embedder checkpoint")
+    p.add_argument("-v", "--verbose", action="store_true", default=dflt(False))
+    return p
+
+
 def build_parser() -> argparse.ArgumentParser:
     # Local, like every other import here: the CLI must build without cv2.
     from .labeler import ORDERINGS
 
-    p = argparse.ArgumentParser(prog="picam_yolo.dogid", description=__doc__)
-    p.add_argument("--root", type=Path, default=DEFAULT_ROOT, help="dataset directory")
-    p.add_argument("--gallery", type=Path, default=None, help="default: <root>/gallery.npz")
-    p.add_argument("--embedder", choices=("hash", "torch"), default="hash",
-                   help="'hash' needs no torch and is for smoke-testing only")
-    p.add_argument("--arch", default="mobilenet_v3_small")
-    p.add_argument("--weights", default=None, help="fine-tuned embedder checkpoint")
-    p.add_argument("-v", "--verbose", action="store_true")
+    shared = _common_options(suppress=True)
+    p = argparse.ArgumentParser(
+        prog="picam_yolo.dogid",
+        description=__doc__,
+        parents=[_common_options(suppress=False)],
+    )
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    c = sub.add_parser("capture", help="harvest dog crops from the live stream")
+    c = sub.add_parser("capture", parents=[shared], help="harvest dog crops from the live stream")
     c.add_argument("--host", default="rpi")
     c.add_argument("--port", type=int, default=5555)
     c.add_argument("--seconds", type=float, default=60)
@@ -158,7 +182,7 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--novelty", type=int, default=8, help="0 keeps near-duplicates")
     c.set_defaults(func=cmd_capture)
 
-    c = sub.add_parser("label", help="assign identities to crops")
+    c = sub.add_parser("label", parents=[shared], help="assign identities to crops")
     c.add_argument("--limit", type=int, default=500)
     c.add_argument(
         "--order",
@@ -169,21 +193,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     c.set_defaults(func=cmd_label)
 
-    c = sub.add_parser("enrol", help="build the gallery from labelled crops")
+    c = sub.add_parser("enrol", parents=[shared], help="build the gallery from labelled crops")
     c.add_argument("--min-similarity", type=float, default=0.55)
     c.add_argument("--min-margin", type=float, default=0.05)
     c.set_defaults(func=cmd_enrol)
 
-    c = sub.add_parser("eval", help="score the gallery on held-out crops")
+    c = sub.add_parser("eval", parents=[shared], help="score the gallery on held-out crops")
     c.add_argument("--suggest-threshold", action="store_true")
     c.set_defaults(func=cmd_eval)
 
-    c = sub.add_parser("finetune", help="sharpen the embedder (skeleton)")
+    c = sub.add_parser("finetune", parents=[shared], help="sharpen the embedder (skeleton)")
     c.add_argument("--out", default="models/dog_embedder.pt")
     c.add_argument("--epochs", type=int, default=20)
     c.set_defaults(func=cmd_finetune)
 
-    sub.add_parser("stats", help="what is in the dataset").set_defaults(func=cmd_stats)
+    sub.add_parser(
+        "stats", parents=[shared], help="what is in the dataset"
+    ).set_defaults(func=cmd_stats)
     return p
 
 
