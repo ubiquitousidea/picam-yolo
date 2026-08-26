@@ -169,6 +169,58 @@ boot, so post-mortems of a crash are impossible after the fact. The Pi also has
 no RTC battery, so early-boot journal timestamps use a pre-NTP clock and can sit
 ~9 minutes behind `uptime -s`. Trust `uptime -s`.
 
+## Exposure, and why crops came back blurry
+
+The first dog-id capture session produced 233 crops that were all unusable:
+sharpness (variance of Laplacian) measured **median 8, max 35** against **36 for
+the static background** — the subject was smeared while the lens was perfectly in
+focus. `PiCameraSource.start()` set no camera controls at all, so AE was free to
+pick a long shutter, and in a 55–90 lux room it did.
+
+Measured on this camera, same scene, at 2028x1520:
+
+| setting | exposure | gain | frame brightness | frame sharpness |
+|---|---|---|---|---|
+| (none — old default) | 33.0 ms | 2.14 | — | — |
+| `--exposure-mode short` | **20.0 ms** | 3.56 | 101/255 | 41.1 |
+| `--exposure-mode short --ev 0.7` | 33.0 ms | 4.00 | — | — |
+| `--exposure-us 8000 --gain 8` | 8.0 ms | 8.00 | 93.6/255 | 40.5 |
+| `--exposure-us 5000 --gain 12` | **5.0 ms** | 11.91 | 92.0/255 | 40.8 |
+| `--exposure-us 3000 --gain 16` | 3.0 ms | 16.00 | 81.2/255 | 36.2 |
+| `--exposure-us 2000 --gain 22` | 2.0 ms | 21.79 | 77.0/255 | 34.9 |
+
+Three things this settles:
+
+- **`--ev` cancels `--exposure-mode short`.** EV compensation asks AE for a
+  brighter picture, and AE spends the budget on a *longer* shutter — 20 ms went
+  back to 33 ms. The combination is the worst of both worlds. If a subject is
+  underexposed against a bright background, reach for `--metering spot`, not
+  `--ev`.
+- **5 ms at gain 12 is the sweet spot.** It holds brightness (92 vs 101) and
+  static sharpness (40.8 vs 41.1) against the 20 ms AE result while cutting the
+  shutter 4x — so 4x less motion blur, and the gain noise costs nothing
+  measurable. Below 5 ms brightness falls away and gain hits the sensor ceiling
+  (21.79 at 2 ms).
+- **There is no AE-preserving hard cap on exposure.** `FrameDurationLimits` would
+  bound it, but its maximum also sets a *minimum* frame rate, and 8 ms implies
+  125 fps, which the sensor cannot deliver at this resolution. Short of manual,
+  `--exposure-mode short` is the only lever.
+
+So: `--exposure-mode short` is the right **service** default — AE stays in charge
+and survives the room getting darker. `--exposure-us 5000 --gain 12` is for a
+**supervised capture session**, where a fixed shutter is safe because someone is
+watching; leave it in the unit and the first cloudy evening produces a black
+stream. Same rule as the four-core experiment: don't park a fixed config in the
+unit.
+
+**Sharpness is measured, not eyeballed.** Variance of Laplacian on the crop,
+compared against the same statistic on the static background of the same frame.
+The absolute scale is meaningless here (q60 JPEG smooths high frequencies); the
+*ratio* to the static scene is what says whether the subject is blurred or the
+lens is off. Beware two confounds when comparing sessions: the metric rises with
+brightness, so an EV change inflates it on its own, and a dog standing still is
+sharp at any exposure.
+
 ## Hardware baseline
 
 Raspberry Pi 5, 8 GB, Debian 13 (trixie), Python 3.13.5, kernel 6.18.34-rpt.

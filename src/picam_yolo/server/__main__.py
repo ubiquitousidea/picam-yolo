@@ -8,7 +8,15 @@ import signal
 import sys
 import threading
 
-from .cameras import CameraInfo, PiCameraSource, SyntheticSource, discover_cameras
+from .cameras import (
+    EXPOSURE_MODES,
+    METERING_MODES,
+    CameraInfo,
+    PiCameraSource,
+    SyntheticSource,
+    build_controls,
+    discover_cameras,
+)
 from .detector import create_detector
 from .pipeline import CameraPipeline, FramePublisher
 
@@ -65,6 +73,26 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="skip hardware and publish N test-pattern streams instead",
     )
+    # Exposure. Indoors, an unconstrained AE loop picks a long shutter and
+    # smears anything that moves -- see the cameras.py docstring.
+    e = p.add_argument_group("exposure")
+    e.add_argument(
+        "--exposure-mode",
+        choices=EXPOSURE_MODES,
+        default="normal",
+        help="'short' biases AE to a fast shutter and higher gain (default: normal)",
+    )
+    e.add_argument(
+        "--ev", type=float, default=0.0, help="exposure compensation in stops, e.g. 1.0"
+    )
+    e.add_argument("--metering", choices=METERING_MODES, default="centre")
+    e.add_argument(
+        "--exposure-us",
+        type=int,
+        default=None,
+        help="pin the shutter in microseconds; disables AE (use with --gain)",
+    )
+    e.add_argument("--gain", type=float, default=None, help="analogue gain")
     p.add_argument("-v", "--verbose", action="store_true")
     return p
 
@@ -98,6 +126,22 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     log.info("using %d camera(s): %s", len(cameras), ", ".join(c.label for c in cameras))
+
+    # Built once, and only when a real camera is present: build_controls imports
+    # libcamera, which does not exist on a dev machine running --synthetic.
+    camera_controls: dict = {}
+    if any(c.model != "synthetic" for c in cameras):
+        try:
+            camera_controls = build_controls(
+                exposure_mode=args.exposure_mode,
+                ev=args.ev,
+                metering=args.metering,
+                exposure_us=args.exposure_us,
+                gain=args.gain,
+            )
+        except ValueError as exc:
+            log.error("%s", exc)
+            return 1
 
     classes = [int(x) for x in args.classes.split(",") if x.strip()] or None
     try:
@@ -133,7 +177,7 @@ def main(argv: list[str] | None = None) -> int:
         source = (
             SyntheticSource(info, args.size)
             if info.model == "synthetic"
-            else PiCameraSource(info, args.size)
+            else PiCameraSource(info, args.size, controls=camera_controls)
         )
         pipelines.append(
             CameraPipeline(
