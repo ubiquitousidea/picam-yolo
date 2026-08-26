@@ -76,11 +76,10 @@ def evaluate(dataset: CropDataset, embedder: Embedder, gallery: Gallery, split: 
         log.warning("no %r crops -- label more, every %dth goes to validation", split, 5)
         return report
 
-    for rec in records:
-        try:
-            vec = embedder.embed([dataset.image(rec.crop_id)])[0]
-        except (FileNotFoundError, ValueError):
-            continue
+    by_id = {r.crop_id: r for r in records}
+    vecs, ids = dataset.embed_ids_present(embedder, list(by_id))
+    for cid, vec in zip(ids, vecs):
+        rec = by_id[cid]
         predicted = gallery.match(vec).name
         report.n += 1
         key = predicted or "(rejected)"
@@ -102,11 +101,10 @@ def suggest_threshold(dataset: CropDataset, embedder: Embedder, gallery: Gallery
     particular dogs are.
     """
     same, diff = [], []
-    for rec in dataset.identities(split="val"):
-        try:
-            vec = embedder.embed([dataset.image(rec.crop_id)])[0]
-        except (FileNotFoundError, ValueError):
-            continue
+    val = {r.crop_id: r for r in dataset.identities(split="val")}
+    vecs, ids = dataset.embed_ids_present(embedder, list(val))
+    for cid, vec in zip(ids, vecs):
+        rec = val[cid]
         sims = gallery.centroids @ (vec / max(np.linalg.norm(vec), 1e-9))
         for name, sim in zip(gallery.names, sims):
             (same if name == rec.label else diff).append(float(sim))

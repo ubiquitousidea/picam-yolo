@@ -534,9 +534,21 @@ Non-obvious bits:
   `test_embeddings_separate_different_dogs` asserts within-class vs
   between-class separation directly, which is the property that actually
   matters. Keep that test whenever the embedder changes.
-- **The gallery is embedder-specific.** Re-run `enrol` after any change of
-  backbone or weights; centroids built under the old weights are meaningless
-  under the new ones.
+- **The gallery is embedder-specific, and now says so.** Centroids built under
+  one backbone are meaningless under another, so `Gallery` records the embedder
+  that built it and `label`/`eval` default to *that* rather than to `hash`.
+  Before, `label` with no `--embedder` silently picked the 64-dim hash embedder
+  against a 576-dim torch gallery and died as `matmul: size 64 is different from
+  576` deep inside numpy. Galleries saved before this infer their backend from
+  centroid width. Re-run `enrol` after any change of backbone or weights.
+- **Embeddings are cached by crop_id, and that is safe because crops are
+  content-addressed.** A crop_id is the SHA-1 of its JPEG bytes, so it always
+  names the same pixels and a cached vector can never go stale. Ranking 1470
+  crops by gallery margin — which `label` does on every start, since choosing
+  the most uncertain N requires scoring all of them — went from **120.1 s to
+  0.01 s**. The cache file is keyed by backend, width *and* weights filename:
+  a fine-tuned checkpoint yields different vectors from the same architecture,
+  and sharing a cache between them would mix two embedding spaces silently.
 
 `train.finetune()` is a deliberate skeleton — its docstring carries the intended
 shape. Run `eval` first: a pretrained backbone plus `enrol` is often enough, and

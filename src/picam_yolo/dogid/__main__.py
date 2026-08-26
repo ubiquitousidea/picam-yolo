@@ -26,13 +26,30 @@ def _dataset(args):
     return CropDataset.open(args.root)
 
 
-def _embedder(args):
+def _embedder(args, gallery=None):
+    """Build the embedder, defaulting to whatever the gallery was built with.
+
+    A gallery's centroids are meaningless under any other backbone, so "match
+    the gallery" is the only sensible default once one exists -- and getting it
+    wrong used to fail as a numpy shape error rather than as advice. An explicit
+    --embedder still wins, so a deliberate mismatch is still reachable (and now
+    reports itself clearly).
+    """
     from .embed import create_embedder
 
-    kwargs = {}
-    if args.embedder == "torch":
-        kwargs = {"arch": args.arch, "weights_path": args.weights}
-    return create_embedder(args.embedder, **kwargs)
+    backend = args.embedder
+    arch, weights = args.arch, args.weights
+    if backend is None:
+        spec = (gallery.embedder if gallery is not None else None) or {}
+        backend = gallery.backend if gallery is not None else "hash"
+        if gallery is not None:
+            arch = spec.get("arch", arch) if args.arch is None else args.arch
+            weights = spec.get("weights", weights) if args.weights is None else args.weights
+            log.info("using the %r embedder this gallery was built with", backend)
+    arch = arch or "mobilenet_v3_small"
+
+    kwargs = {"arch": arch, "weights_path": weights} if backend == "torch" else {}
+    return create_embedder(backend, **kwargs)
 
 
 def _gallery(args, required: bool = True):
@@ -74,7 +91,9 @@ def cmd_label(args) -> int:
         return 0
 
     gallery = _gallery(args, required=False)
-    embedder = _embedder(args) if gallery else None
+    embedder = _embedder(args, gallery) if gallery else None
+    if gallery is not None:
+        gallery.check_embedder(embedder)
     if gallery:
         print(f"suggesting from {len(gallery.dog_names)} enrolled dog(s)")
     ordered = order_for_labelling(pending, ds, embedder, gallery, args.order)[: args.limit]
@@ -102,7 +121,9 @@ def cmd_enrol(args) -> int:
 def cmd_eval(args) -> int:
     from .train import evaluate, suggest_threshold
 
-    ds, emb, gal = _dataset(args), _embedder(args), _gallery(args)
+    ds, gal = _dataset(args), _gallery(args)
+    emb = _embedder(args, gal)
+    gal.check_embedder(emb)
     report = evaluate(ds, emb, gal)
     if not report.n:
         print("no validation crops yet -- label more (every 5th goes to val)")
@@ -153,9 +174,10 @@ def _common_options(suppress: bool) -> argparse.ArgumentParser:
 
     p.add_argument("--root", type=Path, default=dflt(DEFAULT_ROOT), help="dataset directory")
     p.add_argument("--gallery", type=Path, default=dflt(None), help="default: <root>/gallery.npz")
-    p.add_argument("--embedder", choices=("hash", "torch"), default=dflt("hash"),
-                   help="'hash' needs no torch and is for smoke-testing only")
-    p.add_argument("--arch", default=dflt("mobilenet_v3_small"))
+    p.add_argument("--embedder", choices=("hash", "torch"), default=dflt(None),
+                   help="default: match the gallery, else 'hash' (which needs no "
+                        "torch and is for smoke-testing only)")
+    p.add_argument("--arch", default=dflt(None), help="default: mobilenet_v3_small")
     p.add_argument("--weights", default=dflt(None), help="fine-tuned embedder checkpoint")
     p.add_argument("-v", "--verbose", action="store_true", default=dflt(False))
     return p

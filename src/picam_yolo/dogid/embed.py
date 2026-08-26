@@ -35,8 +35,11 @@ class Embedder(Protocol):
     """Maps a batch of BGR crops to L2-normalised row vectors."""
 
     dim: int
+    backend: str
 
     def embed(self, crops: list[np.ndarray]) -> np.ndarray: ...
+
+    def spec(self) -> dict: ...
 
 
 def l2_normalise(x: np.ndarray) -> np.ndarray:
@@ -57,6 +60,10 @@ class HashEmbedder:
     HUE_BINS = 16
 
     dim = CELLS * CELLS * HUE_BINS  # 64
+    backend = "hash"
+
+    def spec(self) -> dict:
+        return {"backend": self.backend, "dim": self.dim}
 
     def embed(self, crops: list[np.ndarray]) -> np.ndarray:
         """Per-cell hue histograms, concatenated.
@@ -103,6 +110,12 @@ class TorchvisionEmbedder:
     between *similar* dogs, which is where the zero-shot features struggle.
     """
 
+    backend = "torch"
+
+    def spec(self) -> dict:
+        return {"backend": self.backend, "dim": self.dim, "arch": self.arch,
+                "weights": self.weights_path}
+
     def __init__(self, arch: str = "mobilenet_v3_small", weights_path: str | None = None):
         import torch
         import torchvision
@@ -125,6 +138,7 @@ class TorchvisionEmbedder:
         self._model = model
         self.dim = self._feature_dim
         self.arch = arch
+        self.weights_path = weights_path
 
         # ImageNet normalisation, in BGR order to match this project's frames.
         self._mean = np.array([0.406, 0.456, 0.485], dtype=np.float32)

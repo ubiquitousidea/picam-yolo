@@ -45,6 +45,7 @@ _FONT = 0  # cv2.FONT_HERSHEY_SIMPLEX, avoided at import so cv2 stays lazy
 PANEL_H = 150
 CANVAS_W, CANVAS_H = 720, 540
 VAL_EVERY = 5  # every Nth labelled crop goes to validation
+SCORE_BATCH = 32  # crops per embedder call when ranking; see order_for_labelling
 
 
 ORDERINGS = ("auto", "uncertain", "confident", "captured")
@@ -88,13 +89,15 @@ def order_for_labelling(
         log.warning("no gallery, so ordering by detector confidence instead")
         return sorted(records, key=lambda r: -r.det_conf)
 
-    scored = []
-    for rec in records:
-        try:
-            vec = embedder.embed([dataset.image(rec.crop_id)])[0]
-        except (FileNotFoundError, ValueError):
-            continue
-        scored.append((gallery.match(vec).margin, rec))
+    # Ranking by margin means scoring *every* pending crop, even though only
+    # --limit of them get shown, so this is the slowest step in the workflow --
+    # it sat silently for over two minutes on a 1470-crop dataset. `embed_ids`
+    # caches by crop_id, so that cost is paid once rather than every session.
+    by_id = {r.crop_id: r for r in records}
+    vecs, ids = dataset.embed_ids_present(embedder, list(by_id), SCORE_BATCH)
+    scored = [
+        (match.margin, by_id[cid]) for cid, match in zip(ids, gallery.match_batch(vecs))
+    ]
     return [rec for _, rec in sorted(scored, key=lambda pair: pair[0])]
 
 
@@ -134,11 +137,10 @@ class Labeler:
     def suggest(self, rec: CropRecord) -> tuple[str | None, float]:
         if self.embedder is None or self.gallery is None:
             return None, 0.0
-        try:
-            vec = self.embedder.embed([self.dataset.image(rec.crop_id)])[0]
-        except (FileNotFoundError, ValueError):
+        vecs, _ = self.dataset.embed_ids_present(self.embedder, [rec.crop_id])
+        if not len(vecs):
             return None, 0.0
-        m = self.gallery.match(vec)
+        m = self.gallery.match(vecs[0])
         return m.name, m.confidence
 
     # -- drawing -----------------------------------------------------------

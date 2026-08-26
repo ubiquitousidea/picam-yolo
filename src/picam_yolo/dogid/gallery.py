@@ -33,6 +33,7 @@ from .embed import Embedder, l2_normalise
 log = logging.getLogger(__name__)
 
 REJECT = "__reject__"  # internal centroid name covering both negative labels
+HASH_DIM = 64  # HashEmbedder.dim; identifies a legacy gallery with no recorded spec
 
 
 @dataclass
@@ -53,6 +54,7 @@ class Gallery:
         min_similarity: float = 0.55,
         min_margin: float = 0.05,
         meta: dict | None = None,
+        embedder: dict | None = None,
     ):
         if len(names) != len(centroids):
             raise ValueError("names and centroids disagree in length")
@@ -61,6 +63,10 @@ class Gallery:
         self.min_similarity = min_similarity
         self.min_margin = min_margin
         self.meta = meta or {}
+        # Which embedder produced these centroids. A gallery is meaningless
+        # under any other one, and without this recorded the mismatch surfaces
+        # as a matmul shape error deep inside numpy rather than as advice.
+        self.embedder = embedder or {}
 
     # -- build / persist ---------------------------------------------------
 
@@ -87,7 +93,9 @@ class Gallery:
 
         names, centroids, meta = [], [], {}
         for name, crop_ids in sorted(groups.items()):
-            vecs = _embed_ids(dataset, embedder, crop_ids, batch)
+            vecs = dataset.embed_ids(embedder, crop_ids, batch)
+            if not len(vecs):
+                raise ValueError(f"no readable crops for {name!r}")
             centroid = vecs.mean(axis=0)
             names.append(name)
             centroids.append(centroid)
@@ -102,7 +110,8 @@ class Gallery:
             }
             log.info("enrolled %-16s n=%-4d cohesion=%.3f", name, len(crop_ids), meta[name]["cohesion"])
 
-        return cls(names, np.stack(centroids), meta=meta, **kwargs)
+        return cls(names, np.stack(centroids), meta=meta,
+                   embedder=embedder.spec() if hasattr(embedder, "spec") else {}, **kwargs)
 
     def save(self, path: Path | str) -> None:
         path = Path(path)
@@ -117,6 +126,7 @@ class Gallery:
                         "min_similarity": self.min_similarity,
                         "min_margin": self.min_margin,
                         "meta": self.meta,
+                        "embedder": self.embedder,
                     }
                 )
             ),
@@ -133,6 +143,7 @@ class Gallery:
             min_similarity=cfg["min_similarity"],
             min_margin=cfg["min_margin"],
             meta=cfg.get("meta", {}),
+            embedder=cfg.get("embedder", {}),
         )
 
     # -- query -------------------------------------------------------------
@@ -141,9 +152,47 @@ class Gallery:
     def dog_names(self) -> list[str]:
         return [n for n in self.names if n != REJECT]
 
+    @property
+    def dim(self) -> int:
+        return int(self.centroids.shape[1])
+
+    @property
+    def backend(self) -> str:
+        """Which embedder built this, inferring it for galleries saved before
+        the spec was recorded. `HashEmbedder` is the only 64-dim backend, so the
+        width identifies it; anything else came from a torch backbone."""
+        recorded = self.embedder.get("backend")
+        if recorded:
+            return recorded
+        return "hash" if self.dim == HASH_DIM else "torch"
+
+    def check_embedder(self, embedder) -> None:
+        """Refuse an embedder this gallery was not built with.
+
+        The centroids only mean anything under the backbone that produced them,
+        so a mismatch is never recoverable -- but it used to announce itself as
+        `matmul: size 64 is different from 576` from inside numpy. Say what
+        happened and what to type instead.
+        """
+        if getattr(embedder, "dim", self.dim) == self.dim:
+            return
+        was = self.backend
+        raise SystemExit(
+            f"this gallery was built with the {was!r} embedder "
+            f"({self.dim}-dim) but you are using {getattr(embedder, 'backend', '?')!r} "
+            f"({embedder.dim}-dim).\n"
+            f"Pass --embedder {was}, or rebuild it with `enrol --embedder "
+            f"{getattr(embedder, 'backend', 'torch')}`."
+        )
+
     def match(self, embedding: np.ndarray) -> Match:
         """Nearest centroid, subject to the similarity and margin gates."""
         vec = l2_normalise(np.asarray(embedding, dtype=np.float32).reshape(1, -1))[0]
+        if vec.shape[0] != self.dim:
+            raise ValueError(
+                f"embedding is {vec.shape[0]}-dim but this gallery is {self.dim}-dim; "
+                f"it was built with the {self.embedder.get('backend', 'unknown')!r} embedder"
+            )
         sims = self.centroids @ vec
         order = np.argsort(-sims)
 
@@ -159,23 +208,3 @@ class Gallery:
 
     def match_batch(self, embeddings: np.ndarray) -> list[Match]:
         return [self.match(e) for e in np.asarray(embeddings)]
-
-
-def _embed_ids(
-    dataset: CropDataset, embedder: Embedder, crop_ids: list[str], batch: int
-) -> np.ndarray:
-    """Embed crops in batches, skipping any that fail to decode."""
-    out = []
-    for i in range(0, len(crop_ids), batch):
-        imgs, kept = [], []
-        for cid in crop_ids[i : i + batch]:
-            try:
-                imgs.append(dataset.image(cid))
-                kept.append(cid)
-            except FileNotFoundError:
-                log.warning("crop %s missing on disk, skipping", cid)
-        if imgs:
-            out.append(embedder.embed(imgs))
-    if not out:
-        raise ValueError("no readable crops")
-    return np.vstack(out)

@@ -379,7 +379,9 @@ def test_subparser_default_does_not_clobber_a_leading_value():
 
     args = build_parser().parse_args(["--embedder", "torch", "enrol"])
     assert args.embedder == "torch"
-    assert build_parser().parse_args(["enrol"]).embedder == "hash"
+    # Unset is None, not "hash": _embedder() resolves it against the gallery,
+    # so "the user did not choose" has to stay distinguishable from "chose hash".
+    assert build_parser().parse_args(["enrol"]).embedder is None
 
 
 def test_shared_options_keep_their_defaults(tmp_path):
@@ -390,3 +392,135 @@ def test_shared_options_keep_their_defaults(tmp_path):
     assert args.verbose is False
     assert build_parser().parse_args(["stats", "-v"]).verbose is True
     assert build_parser().parse_args(["-v", "stats"]).verbose is True
+
+
+
+# -- embedder / gallery agreement ------------------------------------------
+
+
+def _torchless_gallery(tmp_path):
+    ds = CropDataset.open(tmp_path / "ds")
+    for hue, name in ((10, "rex"), (100, "bo")):
+        for i in range(3):
+            ds.label(ds.add(synth_dog(hue, seed=hue * 7 + i), source="t", ts=0.0,
+                            box=(0, 0, 128, 128), det_conf=0.9), name)
+    return ds, Gallery.build(ds, create_embedder("hash"))
+
+
+def test_gallery_records_the_embedder_that_built_it(tmp_path):
+    _, gallery = _torchless_gallery(tmp_path)
+    assert gallery.embedder["backend"] == "hash"
+    assert gallery.embedder["dim"] == gallery.dim == 64
+
+
+def test_embedder_spec_survives_a_save_load_round_trip(tmp_path):
+    _, gallery = _torchless_gallery(tmp_path)
+    gallery.save(tmp_path / "g.npz")
+    assert Gallery.load(tmp_path / "g.npz").embedder["backend"] == "hash"
+
+
+def test_mismatched_embedder_is_reported_not_matmul_crashed(tmp_path):
+    """Regression: labelling against a 576-dim torch gallery with the default
+    64-dim hash embedder used to die inside numpy with
+    'size 64 is different from 576'."""
+    import numpy as np
+
+    _, gallery = _torchless_gallery(tmp_path)
+
+    class FakeTorch:
+        dim, backend = 576, "torch"
+
+    with pytest.raises(SystemExit) as exc:
+        gallery.check_embedder(FakeTorch())
+    msg = str(exc.value)
+    assert "--embedder hash" in msg and "576" in msg and "64" in msg
+
+    with pytest.raises(ValueError, match="576-dim.*64-dim|64-dim.*576"):
+        gallery.match(np.zeros(576, dtype=np.float32))
+
+
+def test_matching_embedder_passes_the_check(tmp_path):
+    _, gallery = _torchless_gallery(tmp_path)
+    gallery.check_embedder(create_embedder("hash"))  # must not raise
+
+
+def test_embedder_defaults_to_the_gallerys_backend(tmp_path):
+    """The fix for the real failure: `label` with no --embedder must pick the
+    gallery's backend, not fall back to 'hash'."""
+    from picam_yolo.dogid.__main__ import _embedder, build_parser
+
+    _, gallery = _torchless_gallery(tmp_path)
+    gallery.embedder = {"backend": "hash", "dim": 64}
+    args = build_parser().parse_args(["label"])
+    assert _embedder(args, gallery).backend == "hash"
+    # An explicit choice still wins over the gallery's.
+    explicit = build_parser().parse_args(["label", "--embedder", "hash"])
+    assert _embedder(explicit, gallery).backend == "hash"
+
+
+# -- embedding cache -------------------------------------------------------
+
+
+def test_embed_ids_caches_and_reuses(tmp_path):
+    """Crops are content-addressed, so a cached vector can never go stale."""
+    ds = CropDataset.open(tmp_path / "ds")
+    ids = [ds.add(synth_dog(10, seed=i), source="t", ts=0.0, box=(0, 0, 128, 128), det_conf=0.9)
+           for i in range(5)]
+
+    class Counting:
+        dim, backend = 64, "hash"
+        calls = 0
+
+        def spec(self):
+            return {"backend": self.backend, "dim": self.dim}
+
+        def embed(self, crops):
+            type(self).calls += len(crops)
+            return create_embedder("hash").embed(crops)
+
+    emb = Counting()
+    first = ds.embed_ids(emb, ids)
+    assert first.shape == (5, 64) and Counting.calls == 5
+
+    second = ds.embed_ids(emb, ids)
+    assert Counting.calls == 5  # nothing recomputed
+    assert np.allclose(first, second)
+
+    # A new crop costs exactly one more embed, not a full rebuild.
+    ids.append(ds.add(synth_dog(90, seed=99), source="t", ts=0.0,
+                      box=(0, 0, 128, 128), det_conf=0.9))
+    ds.embed_ids(emb, ids)
+    assert Counting.calls == 6
+
+
+def test_cache_is_keyed_by_embedder(tmp_path):
+    """Two backbones must never share a cache file; their vectors are not
+    comparable and mixing them would corrupt the gallery silently."""
+    ds = CropDataset.open(tmp_path / "ds")
+
+    class Fake:
+        def __init__(self, backend, dim, weights=None):
+            self.backend, self.dim, self._w = backend, dim, weights
+
+        def spec(self):
+            return {"backend": self.backend, "dim": self.dim, "weights": self._w}
+
+    a = ds.embedding_cache(Fake("hash", 64))
+    b = ds.embedding_cache(Fake("torch", 576))
+    c = ds.embedding_cache(Fake("torch", 576, "models/finetuned.pt"))
+    assert len({a, b, c}) == 3
+
+
+def test_corrupt_cache_is_ignored_not_fatal(tmp_path):
+    ds = CropDataset.open(tmp_path / "ds")
+    cid = ds.add(synth_dog(10, seed=1), source="t", ts=0.0, box=(0, 0, 128, 128), det_conf=0.9)
+    emb = create_embedder("hash")
+    ds.embedding_cache(emb).write_bytes(b"not an npz")
+    assert ds.embed_ids(emb, [cid]).shape == (1, 64)
+
+
+def test_embed_ids_present_reports_what_it_embedded(tmp_path):
+    ds = CropDataset.open(tmp_path / "ds")
+    cid = ds.add(synth_dog(10, seed=1), source="t", ts=0.0, box=(0, 0, 128, 128), det_conf=0.9)
+    vecs, ids = ds.embed_ids_present(create_embedder("hash"), [cid, "deadbeef" * 5])
+    assert ids == [cid] and vecs.shape == (1, 64)

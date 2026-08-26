@@ -175,6 +175,79 @@ class CropDataset:
             raise FileNotFoundError(f"crop {crop_id} missing or unreadable")
         return img
 
+    # -- embeddings --------------------------------------------------------
+
+    def embedding_cache(self, embedder) -> Path:
+        """Where vectors for this embedder live.
+
+        Keyed by backend, width *and* weights, because a fine-tuned checkpoint
+        produces different vectors from the same architecture -- serving those
+        from a cache named only after the arch would silently mix two embedding
+        spaces, which is the one failure this cache must never cause.
+        """
+        spec = embedder.spec() if hasattr(embedder, "spec") else {}
+        parts = [str(spec.get("backend", "unknown")), str(getattr(embedder, "dim", 0))]
+        if spec.get("weights"):
+            parts.append(Path(str(spec["weights"])).stem)
+        return self.root / f"embeddings-{'-'.join(parts)}.npz"
+
+    def embed_ids(self, embedder, crop_ids: list[str], batch: int = 32) -> np.ndarray:
+        """Embed crops, reusing anything already computed for this embedder.
+
+        Crops are content-addressed, so a crop_id always names the same pixels
+        and a cached vector can never go stale. That makes this a pure win:
+        ranking 1470 crops by gallery margin took ~120 s of torch every time
+        `label` started, and every re-run of `enrol` or `eval` paid it again.
+
+        Missing or unreadable crops are skipped, so the result can be shorter
+        than `crop_ids`; callers that need the correspondence should use
+        `embed_ids_present`.
+        """
+        vecs, _ = self.embed_ids_present(embedder, crop_ids, batch)
+        return vecs
+
+    def embed_ids_present(
+        self, embedder, crop_ids: list[str], batch: int = 32
+    ) -> tuple[np.ndarray, list[str]]:
+        """As `embed_ids`, but also returns the ids that were actually embedded."""
+        path = self.embedding_cache(embedder)
+        cache: dict[str, np.ndarray] = {}
+        if path.exists():
+            try:
+                data = np.load(path, allow_pickle=False)
+                cache = dict(zip((str(i) for i in data["ids"]), data["vecs"]))
+            except (OSError, ValueError, KeyError):
+                # A cache is an optimisation; a corrupt one is not a reason to
+                # refuse to work. Recompute and overwrite it.
+                log.warning("ignoring unreadable embedding cache %s", path)
+
+        missing = [cid for cid in crop_ids if cid not in cache]
+        added = 0
+        for i in range(0, len(missing), batch):
+            imgs, kept = [], []
+            for cid in missing[i : i + batch]:
+                try:
+                    imgs.append(self.image(cid))
+                    kept.append(cid)
+                except (FileNotFoundError, ValueError):
+                    continue
+            if not imgs:
+                continue
+            for cid, vec in zip(kept, embedder.embed(imgs)):
+                cache[cid] = vec
+                added += 1
+
+        if added:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            ids = list(cache)
+            np.savez(path, ids=np.array(ids), vecs=np.stack([cache[i] for i in ids]))
+            log.info("embedded %d new crop(s); cache now holds %d", added, len(cache))
+
+        present = [cid for cid in crop_ids if cid in cache]
+        if not present:
+            return np.zeros((0, getattr(embedder, "dim", 0)), dtype=np.float32), []
+        return np.stack([cache[cid] for cid in present]), present
+
     # -- queries -----------------------------------------------------------
 
     def unlabelled(self) -> list[CropRecord]:
