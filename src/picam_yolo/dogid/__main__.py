@@ -119,7 +119,7 @@ def cmd_enrol(args) -> int:
 
 
 def cmd_eval(args) -> int:
-    from .train import evaluate, suggest_threshold
+    from .train import evaluate, suggest_thresholds
 
     ds, gal = _dataset(args), _gallery(args)
     emb = _embedder(args, gal)
@@ -130,7 +130,7 @@ def cmd_eval(args) -> int:
         return 1
     print(report.render())
     if args.suggest_threshold:
-        suggest_threshold(ds, emb, gal)
+        suggest_thresholds(ds, emb, gal)
     return 0
 
 

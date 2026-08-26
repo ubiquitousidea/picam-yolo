@@ -524,3 +524,78 @@ def test_embed_ids_present_reports_what_it_embedded(tmp_path):
     cid = ds.add(synth_dog(10, seed=1), source="t", ts=0.0, box=(0, 0, 128, 128), det_conf=0.9)
     vecs, ids = ds.embed_ids_present(create_embedder("hash"), [cid, "deadbeef" * 5])
     assert ids == [cid] and vecs.shape == (1, 64)
+
+
+# -- threshold suggestion --------------------------------------------------
+
+
+def _val_gallery(tmp_path):
+    """Two dogs with both train and val crops, so eval/suggest have data."""
+    ds = CropDataset.open(tmp_path / "ds")
+    for hue, name in ((28, "rex"), (118, "bo")):
+        for i in range(6):
+            cid = ds.add(synth_dog(hue, seed=hue * 11 + i), source="t", ts=0.0,
+                         box=(0, 0, 128, 128), det_conf=0.9)
+            ds.label(cid, name, split="val" if i >= 4 else "train")
+    return ds, create_embedder("hash")
+
+
+def test_suggest_thresholds_returns_a_usable_pair(tmp_path):
+    from picam_yolo.dogid.train import suggest_thresholds
+
+    ds, emb = _val_gallery(tmp_path)
+    gallery = Gallery.build(ds, emb)
+    ms, mm = suggest_thresholds(ds, emb, gallery)
+    assert 0.0 <= ms <= 1.0 and 0.0 <= mm <= 1.0
+
+
+def test_suggested_thresholds_are_at_least_as_good_as_the_defaults(tmp_path):
+    """The old version suggested min_similarity alone from distribution
+    midpoints, and on real data proposed 0.827 where the true blocker was the
+    margin gate -- a value that rejected almost everything. Whatever comes back
+    must not score worse than what the gallery already had."""
+    from picam_yolo.dogid.train import evaluate, suggest_thresholds
+
+    ds, emb = _val_gallery(tmp_path)
+    gallery = Gallery.build(ds, emb)
+    before = evaluate(ds, emb, gallery).correct
+
+    ms, mm = suggest_thresholds(ds, emb, gallery)
+    gallery.min_similarity, gallery.min_margin = ms, mm
+    assert evaluate(ds, emb, gallery).correct >= before
+
+
+def test_suggest_thresholds_survives_an_empty_val_split(tmp_path):
+    from picam_yolo.dogid.train import suggest_thresholds
+
+    ds = CropDataset.open(tmp_path / "ds")
+    for i in range(3):
+        ds.label(ds.add(synth_dog(28, seed=i), source="t", ts=0.0,
+                        box=(0, 0, 128, 128), det_conf=0.9), "rex", split="train")
+    gallery = Gallery.build(ds, create_embedder("hash"))
+    assert suggest_thresholds(ds, create_embedder("hash"), gallery) == (
+        gallery.min_similarity, gallery.min_margin
+    )
+
+
+def test_eval_attributes_rejections_to_the_right_gate(tmp_path):
+    """The actionable half of the report: min_margin and min_similarity have
+    opposite fixes, so which one rejected has to be visible."""
+    from picam_yolo.dogid.train import evaluate
+
+    ds, emb = _val_gallery(tmp_path)
+    gallery = Gallery.build(ds, emb)
+
+    # Cosine similarity cannot exceed 1.0, so this rejects every crop on the
+    # similarity gate alone -- the synthetic crops score >0.999 against their
+    # own centroid, so a merely-high threshold would not fire at all.
+    gallery.min_similarity, gallery.min_margin = 1.01, 0.0
+    r = evaluate(ds, emb, gallery)
+    assert r.rejected_similarity == r.rejected > 0
+    assert r.rejected_margin == 0
+
+    gallery.min_similarity, gallery.min_margin = 0.0, 0.999
+    r = evaluate(ds, emb, gallery)
+    assert r.rejected_margin == r.rejected > 0
+    assert r.rejected_similarity == 0
+    assert "lower --min-margin" in r.render()

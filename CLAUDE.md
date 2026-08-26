@@ -523,6 +523,18 @@ Non-obvious bits:
   the rejection class) are separate sets in `dataset.py`. `s` also keeps a crop
   out of the gallery, but leaves it unlabelled, so every future `label` session
   offers it again; `m` records the judgement once.
+- **`min_margin` was the gate that actually bound, and the default was 5x too
+  strict.** On the first real gallery (daisy 33 crops, truffle 23, torch
+  embedder) `min_similarity=0.55` rejected *nobody* -- every similarity landed
+  in 0.774-0.920 -- while `min_margin=0.05` rejected 8 of 11 validation crops.
+  Two dogs of similar build in one room sit close together in embedding space,
+  so margins run 0.014-0.081. Dropping the margin to 0.01 took accuracy from
+  **27.3% to 90.9% with nothing rejected**, changing no other setting. `eval`
+  now names which gate did the rejecting, because the two have opposite fixes.
+- **Do not fit `min_similarity` to a small val split.** The sweep's own best
+  pair raised it to 0.796, which rejected 9.1% for no accuracy gain -- it had
+  simply been fitted to the minimum of 11 points. The margin move is the real
+  effect; the similarity move was noise.
 - **`min_margin` matters as much as `min_similarity`.** Cosine similarity to the
   nearest centroid runs high for *any* dog, so an absolute threshold alone
   confidently misnames strangers. `__unknown__` and `__not_a_dog__` are enrolled
