@@ -15,3 +15,4 @@ recordings/
 # Dog re-id dataset: crops and gallery are captured data, not source.
 # Root-anchored, or it would also match src/picam_yolo/dogid/.
 /dogid/
+/dogid-*/
