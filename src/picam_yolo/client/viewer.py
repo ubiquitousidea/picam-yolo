@@ -11,6 +11,7 @@ import numpy as np
 import zmq
 
 from ..protocol import FrameHeader
+from .identity import name_color
 from .recorder import StreamRecorder
 
 log = logging.getLogger(__name__)
@@ -36,13 +37,34 @@ def class_color(cls_id: int) -> tuple[int, int, int]:
     return int(b), int(g), int(r)
 
 
-def draw_overlay(frame: np.ndarray, header: FrameHeader, fps: float, show_hud: bool) -> np.ndarray:
-    for det in header.detections:
+def detection_label(det, match) -> tuple[str, tuple[int, int, int]]:
+    """Text and colour for one box, given an identity match if there is one.
+
+    A rejection is shown rather than hidden: `dog ?` with the similarity that
+    fell short is the feedback that tells you whether the gallery needs more
+    crops or just a lower `--min-similarity`, and it is visible on the stream
+    while you are still standing in front of the camera.
+    """
+    if match is None:
+        return f"{det.name} {det.conf:.2f}", class_color(det.cls_id)
+    if match.name is None:
+        return f"{det.name} ? {match.confidence:.2f}", class_color(det.cls_id)
+    return f"{match.name} {match.confidence:.2f}", name_color(match.name)
+
+
+def draw_overlay(
+    frame: np.ndarray,
+    header: FrameHeader,
+    fps: float,
+    show_hud: bool,
+    identities: dict | None = None,
+) -> np.ndarray:
+    identities = identities or {}
+    for i, det in enumerate(header.detections):
         x1, y1, x2, y2 = (int(v) for v in det.box)
-        color = class_color(det.cls_id)
+        label, color = detection_label(det, identities.get(i))
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
 
-        label = f"{det.name} {det.conf:.2f}"
         (tw, th), base = cv2.getTextSize(label, _FONT, 0.5, 1)
         # Keep the label inside the frame when the box hugs the top edge.
         top = max(y1, th + base + 2)
@@ -58,6 +80,9 @@ def draw_overlay(frame: np.ndarray, header: FrameHeader, fps: float, show_hud: b
             f"infer {header.infer_ms:5.1f}ms  encode {header.encode_ms:4.1f}ms  e2e {latency_ms:5.0f}ms",
             f"{len(header.detections)} object(s)",
         ]
+        if identities:
+            named = [m.name for m in identities.values() if m.name]
+            lines.append(f"id: {', '.join(named) if named else 'none'}  ({len(identities)} dog)")
         for i, line in enumerate(lines):
             y = 22 + i * 20
             cv2.putText(frame, line, (10, y), _FONT, 0.5, (0, 0, 0), 3, cv2.LINE_AA)
@@ -103,6 +128,7 @@ class Viewer:
         rcvhwm: int = 4,
         recorder: StreamRecorder | None = None,
         record_raw: bool = False,
+        identifier=None,
     ):
         self._ctx = zmq.Context.instance()
         self._sock = self._ctx.socket(zmq.SUB)
@@ -121,6 +147,8 @@ class Viewer:
         self.show_hud = True
         self.recorder = recorder or StreamRecorder("recordings")
         self.record_raw = record_raw
+        self.identifier = identifier
+        self.show_ids = identifier is not None
 
     def _fps(self, cam_id: int) -> float:
         times = self._frame_times.setdefault(cam_id, deque(maxlen=30))
@@ -164,6 +192,9 @@ class Viewer:
             "connected to %s -- click RECORD or press r to record, h toggles the HUD, q quits",
             self._endpoint,
         )
+        if self.identifier is not None:
+            log.info("dog identification on -- i toggles it")
+            self.identifier.start()
         waiting_logged = False
 
         try:
@@ -192,7 +223,14 @@ class Viewer:
                         # Capture the clean frame before any annotation lands on it.
                         self.recorder.write(cam_id, frame, fps, header.ts)
 
-                    draw_overlay(frame, header, fps, self.show_hud)
+                    identities = None
+                    if self.identifier is not None and self.show_ids:
+                        # Submit before drawing: the worker keeps a copy, and
+                        # this frame is about to have boxes painted onto it.
+                        self.identifier.submit(frame, header)
+                        identities = self.identifier.labels(header)
+
+                    draw_overlay(frame, header, fps, self.show_hud, identities)
                     if not self.record_raw:
                         self.recorder.write(cam_id, frame, fps, header.ts)
 
@@ -208,6 +246,9 @@ class Viewer:
                     self.show_hud = not self.show_hud
                 if key == ord("r"):
                     self.recorder.toggle()
+                if key == ord("i") and self.identifier is not None:
+                    self.show_ids = not self.show_ids
+                    log.info("identification %s", "on" if self.show_ids else "off")
 
                 # Quit if the user closed the last window with the title-bar button.
                 if self._windows and all(
@@ -215,6 +256,8 @@ class Viewer:
                 ):
                     break
         finally:
+            if self.identifier is not None:
+                self.identifier.stop()
             # Never leave a half-written container behind on exit or Ctrl-C.
             written = self.recorder.stop()
             if written:

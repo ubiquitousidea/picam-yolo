@@ -49,7 +49,11 @@ python -m picam_yolo.dogid capture --host rpi --seconds 120
 python -m picam_yolo.dogid label                    # OpenCV GUI, AI-suggested
 python -m picam_yolo.dogid enrol --embedder torch
 python -m picam_yolo.dogid eval  --embedder torch --suggest-threshold
-python -m pytest tests/test_dogid.py                # no torch, no camera, no Pi
+python -m pytest tests/                             # no torch, no camera, no Pi
+
+# ...then watch it work on the live stream:
+python -m picam_yolo.client --host rpi --gallery dogid/gallery.npz
+python -m picam_yolo.client --host rpi --gallery dogid/gallery.npz --min-similarity 0.45
 ```
 
 Exporting a model (run wherever torch is installed; the result is portable):
@@ -66,10 +70,10 @@ python -m picam_yolo.server --synthetic 2 --backend none --bind tcp://127.0.0.1:
 python -m picam_yolo.client --host 127.0.0.1 --port 5599
 ```
 
-`tests/` currently covers `dogid` only (`pytest tests/`, no torch or hardware
-required). `--synthetic` + `--backend none` remains the smoke path for the
-server and client; `protocol.py` round-trips and `draw_overlay` against a
-synthetic frame are still untested and are the obvious next additions.
+`tests/` covers `dogid` and the viewer's identity path (`pytest tests/`, no
+torch or hardware required). `--synthetic` + `--backend none` remains the smoke
+path for the server and client; `protocol.py` round-trips are still untested and
+are the obvious next addition.
 
 ## Architecture
 
@@ -400,6 +404,48 @@ and already spends ~50 ms of its frame budget on inference, does no extra work.
 Putting identity on the wire would need a `Detection.identity` field and a
 simultaneous redeploy of both halves; that is the seam if it ever becomes worth
 it.
+
+**Identification is slower than the frame interval, and that shapes
+`client/identity.py`.** Measured on the dev machine, `mobilenet_v3_small` costs
+~97 ms for one crop and ~195 ms for four, against the ~52 ms between frames at
+19 fps; on real 2028x1520 frames a one-crop pass measured ~120 ms. So it cannot
+run on the render thread, and it does not:
+
+- A worker thread embeds. `submit()` never blocks and keeps only the **newest**
+  pending frame per camera, discarding anything queued behind it — the same
+  drop-don't-queue rule as `Viewer._drain()` and the PUB socket. A backlog here
+  would mean naming a dog from a frame that is seconds old.
+- The render thread draws the last result, mapped onto the *current* boxes by
+  IoU (`IdentityTracker`). Identity is stable over a few hundred milliseconds in
+  a way that box position is not. Measured against the live stream: the render
+  step stays at **0.1 ms median** with identification on, and the viewer holds
+  full stream rate.
+- Results are tracked **per camera**. One shared result set would let cam0's dogs
+  claim cam1's boxes — the IoU test compares coordinates, which say nothing about
+  which camera they came from.
+- Results expire after `MAX_AGE_S`, or a name outlives the dog that earned it and
+  lands on whatever walks through that patch of frame next.
+
+**Query-time crops must match enrolment-time crops.** `identify_frame` cuts with
+the same `pad_box`, `PAD_FRAC` and `MIN_CROP_PX` that `dogid.capture` used to
+build the gallery. Cropping tighter or looser at query time shifts the embedding
+distribution away from the enrolled one, which surfaces as mysteriously low
+similarity rather than as an error. The same trap caught the tests: a fixture
+enrolling bare patches scored 0.46 against query crops carrying `pad_box`'s 12 %
+of background, so the fixture now enrols through `CropHarvester` like the real
+thing does.
+
+**A rejection is drawn, not hidden.** An unrecognised dog renders as `dog ? 0.42`
+with the similarity that fell short — the feedback that says whether to collect
+more crops or just lower the threshold, visible while you are still standing in
+front of the camera. `--min-similarity` / `--min-margin` override the values
+baked into the npz, because re-enrolling to try a number re-embeds the whole
+dataset. `i` toggles identification; each name gets a stable colour from crc32,
+not `hash()`, which PYTHONHASHSEED randomises per process.
+
+`--gallery` switches all of this on. Everything it needs — torch, the `dogid`
+package — is imported lazily inside `create_identifier`, so a client installed
+with only the `[client]` extra imports neither and is unaffected.
 
 Non-obvious bits:
 

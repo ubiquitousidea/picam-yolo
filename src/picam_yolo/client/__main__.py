@@ -95,6 +95,31 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="start recording immediately instead of waiting for the button",
     )
+    # Dog identification. Off unless --gallery is given, and everything it
+    # needs (torch, the dogid package) is imported lazily, so a client with
+    # only the [client] extra installed is unaffected by any of this.
+    g = p.add_argument_group("dog identification (see picam_yolo.dogid)")
+    g.add_argument(
+        "--gallery",
+        default=None,
+        help="enrolled gallery npz; enables naming dogs on the stream",
+    )
+    g.add_argument("--embedder", choices=("hash", "torch"), default="torch")
+    g.add_argument("--arch", default="mobilenet_v3_small")
+    g.add_argument("--weights", default=None, help="fine-tuned embedder checkpoint")
+    g.add_argument(
+        "--min-similarity",
+        type=float,
+        default=None,
+        help="override the gallery's threshold without re-enrolling",
+    )
+    g.add_argument("--min-margin", type=float, default=None)
+    g.add_argument(
+        "--identify-interval",
+        type=float,
+        default=0.3,
+        help="minimum seconds between identification passes (default: 0.3)",
+    )
     p.add_argument("-v", "--verbose", action="store_true")
     return p
 
@@ -114,11 +139,32 @@ def main(argv: list[str] | None = None) -> int:
     if args.record:
         recorder.start()
 
+    identifier = None
+    if args.gallery:
+        from .identity import create_identifier
+
+        try:
+            identifier = create_identifier(
+                args.gallery,
+                backend=args.embedder,
+                arch=args.arch,
+                weights=args.weights,
+                min_similarity=args.min_similarity,
+                min_margin=args.min_margin,
+                min_interval=args.identify_interval,
+            )
+        except FileNotFoundError:
+            raise SystemExit(
+                f"no gallery at {args.gallery} -- "
+                f"run `python -m picam_yolo.dogid enrol` first"
+            )
+
     viewer = Viewer(
         endpoint=f"tcp://{host}:{args.port}",
         cameras=cameras,
         recorder=recorder,
         record_raw=args.record_raw,
+        identifier=identifier,
     )
     try:
         return viewer.run()
