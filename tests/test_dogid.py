@@ -599,3 +599,59 @@ def test_eval_attributes_rejections_to_the_right_gate(tmp_path):
     assert r.rejected_margin == r.rejected > 0
     assert r.rejected_similarity == 0
     assert "lower --min-margin" in r.render()
+
+
+# -- enrol inherits tuned gates --------------------------------------------
+
+
+def test_enrol_keeps_the_previous_gallerys_gates(tmp_path, monkeypatch):
+    """Regression: the gates are the tuned part of a gallery and live nowhere
+    else, so re-running `enrol` after labelling more crops reset them to the
+    argparse defaults -- taking a tuned min_margin of 0.01 back to 0.05, and
+    accuracy from 90.9% to 0.0%, with nothing in the output to say why."""
+    from picam_yolo.dogid.__main__ import build_parser, cmd_enrol
+
+    ds = CropDataset.open(tmp_path / "ds")
+    for hue, name in ((28, "rex"), (118, "bo")):
+        for i in range(4):
+            ds.label(ds.add(synth_dog(hue, seed=hue * 13 + i), source="t", ts=0.0,
+                            box=(0, 0, 128, 128), det_conf=0.9), name)
+
+    def run(extra):
+        args = build_parser().parse_args(
+            ["--root", str(tmp_path / "ds"), "enrol", *extra]
+        )
+        args.gallery = tmp_path / "ds" / "gallery.npz"
+        assert cmd_enrol(args) == 0
+        return Gallery.load(args.gallery)
+
+    tuned = run(["--min-margin", "0.01", "--min-similarity", "0.42"])
+    assert (tuned.min_margin, tuned.min_similarity) == (0.01, 0.42)
+
+    # Re-enrol with no gates given: the tuned values must survive.
+    again = run([])
+    assert (again.min_margin, again.min_similarity) == (0.01, 0.42)
+
+    # An explicit value still overrides.
+    changed = run(["--min-margin", "0.03"])
+    assert changed.min_margin == 0.03
+    assert changed.min_similarity == 0.42  # untouched one still inherited
+
+
+def test_enrol_uses_defaults_when_no_gallery_exists(tmp_path):
+    from picam_yolo.dogid.__main__ import (
+        DEFAULT_MIN_MARGIN,
+        DEFAULT_MIN_SIMILARITY,
+        build_parser,
+        cmd_enrol,
+    )
+
+    ds = CropDataset.open(tmp_path / "ds")
+    for i in range(3):
+        ds.label(ds.add(synth_dog(28, seed=i), source="t", ts=0.0,
+                        box=(0, 0, 128, 128), det_conf=0.9), "rex")
+    args = build_parser().parse_args(["--root", str(tmp_path / "ds"), "enrol"])
+    args.gallery = tmp_path / "ds" / "gallery.npz"
+    cmd_enrol(args)
+    g = Gallery.load(args.gallery)
+    assert (g.min_similarity, g.min_margin) == (DEFAULT_MIN_SIMILARITY, DEFAULT_MIN_MARGIN)

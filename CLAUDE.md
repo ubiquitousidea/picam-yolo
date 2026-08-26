@@ -531,6 +531,14 @@ Non-obvious bits:
   so margins run 0.014-0.081. Dropping the margin to 0.01 took accuracy from
   **27.3% to 90.9% with nothing rejected**, changing no other setting. `eval`
   now names which gate did the rejecting, because the two have opposite fixes.
+- **`enrol` inherits the gates from the gallery it replaces.** They are the
+  tuned part of a gallery and live nowhere else, so rebuilding after labelling
+  more crops silently reverted a tuned `min_margin` of 0.01 to the 0.05 default
+  -- accuracy 90.9% to 0.0%, with nothing in the output to say why.
+- **A small val split lies.** The same gallery read 90.9% on 11 val crops and
+  64.7% on 17. The later crops were not harder; there were finally enough to
+  expose a daisy/truffle confusion the first sample had missed. Small-n numbers
+  here are hints, not measurements.
 - **Do not fit `min_similarity` to a small val split.** The sweep's own best
   pair raised it to 0.796, which rejected 9.1% for no accuracy gain -- it had
   simply been fitted to the minimum of 11 points. The margin move is the real

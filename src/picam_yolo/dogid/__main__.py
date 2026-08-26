@@ -18,6 +18,9 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 DEFAULT_ROOT = Path("dogid")
+# Only used when no gallery exists yet; otherwise enrol inherits, see cmd_enrol.
+DEFAULT_MIN_SIMILARITY = 0.55
+DEFAULT_MIN_MARGIN = 0.05
 
 
 def _dataset(args):
@@ -107,11 +110,32 @@ def cmd_enrol(args) -> int:
     from .gallery import Gallery
 
     ds = _dataset(args)
+    # Inherit the gates from the gallery being replaced. They are the tuned
+    # part of a gallery and they live nowhere else, so rebuilding after
+    # labelling more crops used to silently revert them to the argparse
+    # defaults -- which took a tuned min_margin of 0.01 back to 0.05 and an
+    # accuracy of 90.9% back to 0.0%, with nothing in the output to say so.
+    previous = _gallery(args, required=False)
+    min_similarity, min_margin = args.min_similarity, args.min_margin
+    if previous is not None:
+        if min_similarity is None:
+            min_similarity = previous.min_similarity
+        if min_margin is None:
+            min_margin = previous.min_margin
+        if (min_similarity, min_margin) != (DEFAULT_MIN_SIMILARITY, DEFAULT_MIN_MARGIN):
+            log.info(
+                "keeping gates from the existing gallery: min_similarity=%.3f min_margin=%.3f "
+                "(pass them explicitly to change)",
+                min_similarity, min_margin,
+            )
+    min_similarity = DEFAULT_MIN_SIMILARITY if min_similarity is None else min_similarity
+    min_margin = DEFAULT_MIN_MARGIN if min_margin is None else min_margin
+
     gallery = Gallery.build(
         ds,
-        _embedder(args),
-        min_similarity=args.min_similarity,
-        min_margin=args.min_margin,
+        _embedder(args, previous),
+        min_similarity=min_similarity,
+        min_margin=min_margin,
     )
     gallery.save(args.gallery)
     print(f"enrolled {len(gallery.dog_names)} dog(s): {', '.join(gallery.dog_names)}")
@@ -216,8 +240,10 @@ def build_parser() -> argparse.ArgumentParser:
     c.set_defaults(func=cmd_label)
 
     c = sub.add_parser("enrol", parents=[shared], help="build the gallery from labelled crops")
-    c.add_argument("--min-similarity", type=float, default=0.55)
-    c.add_argument("--min-margin", type=float, default=0.05)
+    c.add_argument("--min-similarity", type=float, default=None,
+                   help=f"default: keep the existing gallery's, else {DEFAULT_MIN_SIMILARITY}")
+    c.add_argument("--min-margin", type=float, default=None,
+                   help=f"default: keep the existing gallery's, else {DEFAULT_MIN_MARGIN}")
     c.set_defaults(func=cmd_enrol)
 
     c = sub.add_parser("eval", parents=[shared], help="score the gallery on held-out crops")
