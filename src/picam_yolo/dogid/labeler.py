@@ -18,10 +18,12 @@ that shows two dogs in one padded box, or a motion smear, without feeding it to
 the rejection class the way `u`/`x` would. `s` skips, which leaves the crop
 unlabelled and offers it again next session; `m` records the judgement once.
 
-**Least-confident first.** Crops are ordered by how unsure the gallery is (see
-`order_by_uncertainty`), so the ones that would most improve the boundary come
-first. Labelling 200 well-chosen crops beats labelling 2000 arbitrary ones,
-which matters because the label budget here is a person's evening.
+**Ordered so the label budget buys the most.** Once a gallery exists, crops come
+least-confident first, so the ones that would most improve the boundary are seen
+first -- labelling 200 well-chosen crops beats labelling 2000 arbitrary ones,
+which matters because the budget here is a person's evening. Before a gallery
+exists the order inverts: the *most* confident crops are the clean, full-body
+shots that make good centroids. See `order_for_labelling`.
 
 Text entry is hand-rolled: `waitKey` gives one keycode at a time, so a new dog's
 name is accumulated into a buffer and drawn into the window.
@@ -45,20 +47,46 @@ CANVAS_W, CANVAS_H = 720, 540
 VAL_EVERY = 5  # every Nth labelled crop goes to validation
 
 
-def order_by_uncertainty(
+ORDERINGS = ("auto", "uncertain", "confident", "captured")
+
+
+def order_for_labelling(
     records: list[CropRecord],
     dataset: CropDataset,
     embedder: Embedder | None,
     gallery: Gallery | None,
+    order: str = "auto",
 ) -> list[CropRecord]:
-    """Most-informative first: smallest margin between the top two centroids.
+    """Decide which crops to put in front of the labeller first.
 
-    Without a gallery there is nothing to be uncertain about, so fall back to
-    the detector's own confidence -- its least-certain dogs are the odd poses
-    and part-occlusions that the gallery will most need examples of.
+    The right order is not the same before and after a gallery exists, and
+    getting this backwards is expensive:
+
+    - **Bootstrapping** (no gallery). Show the detector's *most* confident crops.
+      Those are the full-body, well-framed, single-dog shots that make clean
+      centroids. Measured on the first real session, the 40 least-confident of
+      1505 crops ran 0.35-0.37 against a median of 0.75, and were mostly dark,
+      part-occluded, or held two overlapping dogs. Seeding a dog from those
+      poisons every suggestion that follows, because everything downstream is
+      built on the centroid they produce.
+    - **Refining** (a gallery exists). Show the crops the gallery is least sure
+      of -- smallest margin between the top two centroids. Those are the ones
+      that actually move the boundary, which is what makes labelling 200
+      well-chosen crops beat labelling 2000 arbitrary ones.
+
+    `auto` picks between the two on whether a gallery was supplied, which is
+    almost always what you want; the rest are explicit overrides.
     """
+    if order not in ORDERINGS:
+        raise ValueError(f"order must be one of {ORDERINGS}")
+    if order == "captured":
+        return sorted(records, key=lambda r: r.ts)
+    if order == "confident" or (order == "auto" and (embedder is None or gallery is None)):
+        return sorted(records, key=lambda r: -r.det_conf)
     if embedder is None or gallery is None:
-        return sorted(records, key=lambda r: r.det_conf)
+        # "uncertain" asked for explicitly, but nothing to be uncertain against.
+        log.warning("no gallery, so ordering by detector confidence instead")
+        return sorted(records, key=lambda r: -r.det_conf)
 
     scored = []
     for rec in records:

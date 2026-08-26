@@ -65,7 +65,7 @@ def cmd_capture(args) -> int:
 
 
 def cmd_label(args) -> int:
-    from .labeler import Labeler, order_by_uncertainty
+    from .labeler import Labeler, order_for_labelling
 
     ds = _dataset(args)
     pending = ds.unlabelled()
@@ -77,7 +77,7 @@ def cmd_label(args) -> int:
     embedder = _embedder(args) if gallery else None
     if gallery:
         print(f"suggesting from {len(gallery.dog_names)} enrolled dog(s)")
-    ordered = order_by_uncertainty(pending, ds, embedder, gallery)[: args.limit]
+    ordered = order_for_labelling(pending, ds, embedder, gallery, args.order)[: args.limit]
 
     n = Labeler(ds, embedder, gallery).run(ordered)
     print(f"labelled {n}; {len(ds.unlabelled())} still unlabelled")
@@ -136,6 +136,9 @@ def cmd_stats(args) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    # Local, like every other import here: the CLI must build without cv2.
+    from .labeler import ORDERINGS
+
     p = argparse.ArgumentParser(prog="picam_yolo.dogid", description=__doc__)
     p.add_argument("--root", type=Path, default=DEFAULT_ROOT, help="dataset directory")
     p.add_argument("--gallery", type=Path, default=None, help="default: <root>/gallery.npz")
@@ -157,6 +160,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     c = sub.add_parser("label", help="assign identities to crops")
     c.add_argument("--limit", type=int, default=500)
+    c.add_argument(
+        "--order",
+        choices=ORDERINGS,
+        default="auto",
+        help="auto: most-confident first while bootstrapping, least-certain once "
+             "a gallery exists (default)",
+    )
     c.set_defaults(func=cmd_label)
 
     c = sub.add_parser("enrol", help="build the gallery from labelled crops")

@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 import cv2
+import pytest
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -292,3 +293,57 @@ def test_labeller_m_key_discards(tmp_path):
     assert lab.handle_key(ord("m"), rec, None) == "next"
     assert ds.records[cid].label == DISCARD
     assert lab.names == []  # not promoted to a dog name
+
+
+# -- labelling order -------------------------------------------------------
+
+
+def _conf_dataset(tmp_path):
+    ds = CropDataset.open(tmp_path / "ds")
+    for i, conf in enumerate((0.35, 0.95, 0.60)):
+        ds.add(synth_dog(10 + i * 30, seed=i), source="t", ts=float(100 - i),
+               box=(0, 0, 128, 128), det_conf=conf)
+    return ds, ds.unlabelled()
+
+
+def test_bootstrap_order_is_most_confident_first(tmp_path):
+    """Without a gallery, the clean full-body shots must come first: they are
+    what the first centroids are built from. Ordering by ascending confidence
+    here would seed every dog from the detector's worst crops."""
+    from picam_yolo.dogid.labeler import order_for_labelling
+
+    ds, pending = _conf_dataset(tmp_path)
+    got = [r.det_conf for r in order_for_labelling(pending, ds, None, None)]
+    assert got == [0.95, 0.60, 0.35]
+
+
+def test_explicit_orderings(tmp_path):
+    from picam_yolo.dogid.labeler import order_for_labelling
+
+    ds, pending = _conf_dataset(tmp_path)
+    assert [r.det_conf for r in order_for_labelling(pending, ds, None, None, "confident")] == [
+        0.95, 0.60, 0.35
+    ]
+    # Capture order, for reviewing a session as it happened.
+    assert [r.ts for r in order_for_labelling(pending, ds, None, None, "captured")] == [
+        98.0, 99.0, 100.0
+    ]
+    with pytest.raises(ValueError):
+        order_for_labelling(pending, ds, None, None, "sideways")
+
+
+def test_uncertain_order_uses_the_gallery_margin(tmp_path):
+    """With a gallery, smallest-margin-first -- the crops that move the boundary."""
+    from picam_yolo.dogid.labeler import order_for_labelling
+
+    ds, _, _ = _labelled_dataset(tmp_path)
+    embedder = create_embedder("hash")
+    gallery = Gallery.build(ds, embedder)
+    pending = [
+        ds.records[ds.add(synth_dog(h, seed=500 + h), source="t", ts=0.0,
+                          box=(0, 0, 128, 128), det_conf=0.5)]
+        for h in (10, 100, 60)
+    ]
+    ordered = order_for_labelling(pending, ds, embedder, gallery, "uncertain")
+    margins = [gallery.match(embedder.embed([ds.image(r.crop_id)])[0]).margin for r in ordered]
+    assert margins == sorted(margins)
