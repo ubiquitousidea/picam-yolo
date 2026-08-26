@@ -33,14 +33,31 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-# Reserved labels. UNKNOWN means "a dog, but not one we are tracking";
-# NOT_A_DOG means the detector was wrong and the crop is not a dog at all.
-# Both are kept rather than deleted: they are the negatives that stop the
-# gallery from confidently matching a cat, a rug, or the neighbour's collie.
+# Reserved labels, none of which name a dog.
+#
+# UNKNOWN means "a dog, but not one we are tracking"; NOT_A_DOG means the
+# detector was wrong and this is not a dog at all. Both are kept rather than
+# deleted: they are the negatives that stop the gallery from confidently
+# matching a cat, a rug, or the neighbour's collie.
+#
+# DISCARD is different, and the distinction is load-bearing. It marks a crop
+# that is unusable rather than negative -- two dogs inside one padded box, a
+# motion-blurred smear, a tail leaving the frame. Such a crop must not seed a
+# dog's centroid, but it must *equally* not seed the rejection class: a crop
+# containing two dogs we know would teach the gallery that our own dogs look
+# like `__reject__`, dragging that centroid toward the very thing it exists to
+# distinguish. So `RESERVED` (not an identity) and `NEGATIVE_LABELS` (seeds the
+# rejection class) are deliberately different sets.
+#
+# Skipping such a crop instead leaves it unlabelled, which is correct for the
+# gallery but means `unlabelled()` offers it again every session. DISCARD is
+# how a judgement gets recorded once.
 UNLABELLED = ""
 UNKNOWN = "__unknown__"
 NOT_A_DOG = "__not_a_dog__"
-RESERVED = {UNKNOWN, NOT_A_DOG}
+DISCARD = "__discard__"
+NEGATIVE_LABELS = {UNKNOWN, NOT_A_DOG}
+RESERVED = NEGATIVE_LABELS | {DISCARD}
 
 
 @dataclass
@@ -171,7 +188,12 @@ class CropDataset:
         ]
 
     def negatives(self) -> list[CropRecord]:
-        return [r for r in self.records.values() if r.label in RESERVED]
+        """Crops that seed the rejection class -- deliberately not all of
+        RESERVED, since DISCARD marks unusable, not negative."""
+        return [r for r in self.records.values() if r.label in NEGATIVE_LABELS]
+
+    def discarded(self) -> list[CropRecord]:
+        return [r for r in self.records.values() if r.label == DISCARD]
 
     def names(self) -> list[str]:
         return sorted({r.label for r in self.records.values() if r.is_identity})

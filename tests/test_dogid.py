@@ -224,3 +224,71 @@ def test_labeler_splits_every_fifth_crop_to_val(tmp_path):
         lab.handle_key(13, ds.records[cid], "rex")
     assert len(ds.identities("val")) == 2
     assert len(ds.identities("train")) == 8
+
+
+# -- discarding unusable crops ---------------------------------------------
+
+
+def _labelled_dataset(tmp_path):
+    """Two dogs, plus one negative and one unusable crop."""
+    from picam_yolo.dogid.dataset import DISCARD
+
+    ds = CropDataset.open(tmp_path / "ds")
+    ids = []
+    for hue, name in ((10, "rex"), (100, "bo")):
+        for i in range(4):
+            cid = ds.add(synth_dog(hue, seed=hue * 10 + i), source="t", ts=0.0,
+                         box=(0, 0, 128, 128), det_conf=0.9)
+            ds.label(cid, name)
+            ids.append(cid)
+    neg = ds.add(synth_dog(60, seed=999), source="t", ts=0.0, box=(0, 0, 128, 128), det_conf=0.9)
+    ds.label(neg, NOT_A_DOG)
+    bad = ds.add(synth_dog(70, seed=1000), source="t", ts=0.0, box=(0, 0, 128, 128), det_conf=0.9)
+    ds.label(bad, DISCARD)
+    return ds, bad, neg
+
+
+def test_discarded_crop_is_not_an_identity(tmp_path):
+    ds, bad, _ = _labelled_dataset(tmp_path)
+    assert bad not in {r.crop_id for r in ds.identities()}
+    assert ds.names() == ["bo", "rex"]  # DISCARD never becomes a dog name
+
+
+def test_discarded_crop_does_not_seed_the_rejection_class(tmp_path):
+    """The whole point of a separate label. A crop holding two known dogs sent
+    to __reject__ would teach the gallery that our own dogs look like the class
+    that exists to turn them down."""
+    ds, bad, neg = _labelled_dataset(tmp_path)
+    negative_ids = {r.crop_id for r in ds.negatives()}
+    assert neg in negative_ids
+    assert bad not in negative_ids
+
+
+def test_discarded_crop_is_not_offered_again(tmp_path):
+    """Unlike `s` (skip), which leaves it unlabelled and back in the queue."""
+    ds, bad, _ = _labelled_dataset(tmp_path)
+    assert bad not in {r.crop_id for r in ds.unlabelled()}
+    assert [r.crop_id for r in ds.discarded()] == [bad]
+
+
+def test_gallery_excludes_discarded_crops_entirely(tmp_path):
+    from picam_yolo.dogid.gallery import REJECT
+
+    ds, _, _ = _labelled_dataset(tmp_path)
+    gallery = Gallery.build(ds, create_embedder("hash"))
+    assert sorted(gallery.dog_names) == ["bo", "rex"]
+    # The reject centroid was built from the one true negative, not two crops.
+    assert gallery.meta[REJECT]["n"] == 1
+
+
+def test_labeller_m_key_discards(tmp_path):
+    from picam_yolo.dogid.dataset import DISCARD
+    from picam_yolo.dogid.labeler import Labeler
+
+    ds = CropDataset.open(tmp_path / "ds")
+    cid = ds.add(synth_dog(10, seed=1), source="t", ts=0.0, box=(0, 0, 128, 128), det_conf=0.9)
+    rec = ds.records[cid]
+    lab = Labeler(ds)
+    assert lab.handle_key(ord("m"), rec, None) == "next"
+    assert ds.records[cid].label == DISCARD
+    assert lab.names == []  # not promoted to a dog name

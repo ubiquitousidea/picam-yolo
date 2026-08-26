@@ -508,6 +508,16 @@ Non-obvious bits:
 - **Near-duplicate crops are dropped by dhash.** A sleeping dog otherwise
   contributes hundreds of identical frames and the gallery becomes confident
   about exactly one pose.
+- **"Unusable" and "negative" are different labels, and conflating them poisons
+  the gallery.** `m` writes `__discard__` for a crop that cannot be used: two
+  dogs inside one padded box, a motion smear, a dog half out of frame. It is
+  excluded from the identities *and* from the rejection class. Sending such a
+  crop to `u`/`x` instead would enrol it in `__reject__` — teaching the gallery
+  that our own dogs resemble the class whose whole job is to turn strangers
+  down. That is why `RESERVED` (not an identity) and `NEGATIVE_LABELS` (seeds
+  the rejection class) are separate sets in `dataset.py`. `s` also keeps a crop
+  out of the gallery, but leaves it unlabelled, so every future `label` session
+  offers it again; `m` records the judgement once.
 - **`min_margin` matters as much as `min_similarity`.** Cosine similarity to the
   nearest centroid runs high for *any* dog, so an absolute threshold alone
   confidently misnames strangers. `__unknown__` and `__not_a_dog__` are enrolled

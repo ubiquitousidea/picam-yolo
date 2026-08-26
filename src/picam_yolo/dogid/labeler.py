@@ -13,6 +13,11 @@ for everything the model already gets right, and only disagreements cost real
 attention. With no gallery yet, the first pass is manual -- enrol after ~20
 crops and re-run to get suggestions for the rest.
 
+**Not every crop is usable, and that is a third answer.** `m` discards a crop
+that shows two dogs in one padded box, or a motion smear, without feeding it to
+the rejection class the way `u`/`x` would. `s` skips, which leaves the crop
+unlabelled and offers it again next session; `m` records the judgement once.
+
 **Least-confident first.** Crops are ordered by how unsure the gallery is (see
 `order_by_uncertainty`), so the ones that would most improve the boundary come
 first. Labelling 200 well-chosen crops beats labelling 2000 arbitrary ones,
@@ -28,7 +33,7 @@ import logging
 
 import numpy as np
 
-from .dataset import NOT_A_DOG, UNKNOWN, CropDataset, CropRecord
+from .dataset import DISCARD, NOT_A_DOG, UNKNOWN, CropDataset, CropRecord
 from .embed import Embedder
 from .gallery import Gallery
 
@@ -134,7 +139,10 @@ class Labeler:
         for i, name in enumerate(self.names[:9]):
             put(f"{i + 1}:{name}", 12 + (i % 5) * 140, 82 + (i // 5) * 22, 0.5, (200, 220, 255))
 
-        put("n new   u unknown   x not-a-dog   s skip   b back   q quit", 12, PANEL_H - 12, 0.5, (170, 170, 170))
+        put(
+            "n new   u unknown   x not-a-dog   m discard   s skip   b back   q quit",
+            12, PANEL_H - 12, 0.46, (170, 170, 170),
+        )
         return panel
 
     def render(self, rec: CropRecord, idx: int, total: int, suggestion, conf) -> np.ndarray:
@@ -150,7 +158,7 @@ class Labeler:
         split = "val" if self.labelled % VAL_EVERY == VAL_EVERY - 1 else "train"
         self.dataset.label(rec.crop_id, label, split=split)
         self.labelled += 1
-        if label not in self.names and label not in (UNKNOWN, NOT_A_DOG):
+        if label not in self.names and label not in (UNKNOWN, NOT_A_DOG, DISCARD):
             self.names = self.dataset.names()
 
     def handle_key(self, key: int, rec: CropRecord, suggestion: str | None) -> str:
@@ -187,6 +195,13 @@ class Labeler:
             return "next"
         if key == ord("x"):
             self._commit(rec, NOT_A_DOG)
+            return "next"
+        if key == ord("m"):
+            # Unusable, not negative: two dogs in one box, a blurred smear, a
+            # dog half out of frame. Recorded so it is never offered again,
+            # and excluded from the rejection class -- see the dataset module
+            # docstring for why those must not be the same thing.
+            self._commit(rec, DISCARD)
             return "next"
         if key in (13, 10) and suggestion:
             self._commit(rec, suggestion)
