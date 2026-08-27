@@ -47,8 +47,8 @@ Dog re-identification (desktop only; see `src/picam_yolo/dogid/`):
 ```bash
 python -m picam_yolo.dogid capture --host rpi --seconds 120
 python -m picam_yolo.dogid label                    # OpenCV GUI, AI-suggested
-python -m picam_yolo.dogid enrol --embedder torch
-python -m picam_yolo.dogid eval  --embedder torch --suggest-threshold
+python -m picam_yolo.dogid enrol --embedder torch --arch efficientnet_b0
+python -m picam_yolo.dogid eval  --suggest-threshold   # defaults to the gallery's backbone
 python -m pytest tests/                             # no torch, no camera, no Pi
 
 # ...then watch it work on the live stream:
@@ -531,6 +531,35 @@ Non-obvious bits:
   so margins run 0.014-0.081. Dropping the margin to 0.01 took accuracy from
   **27.3% to 90.9% with nothing rejected**, changing no other setting. `eval`
   now names which gate did the rejecting, because the two have opposite fixes.
+- **`efficientnet_b0` beats `mobilenet_v3_small` here, and the margin gate is
+  why.** Same 203 train / 46 val crops, same gates (`min_similarity=0.55`,
+  `min_margin=0.01`), only the backbone changed: accuracy **65.2% -> 93.5%**,
+  rejections **30.4% -> 4.3%**. Ungated accuracy barely moved (91.3% -> 95.7%),
+  so the win is not that EfficientNet names dogs better -- it is that it
+  *separates* them better. Val margins run 4x wider (median 0.065 vs 0.015,
+  p10 0.025 vs 0.003), so daisy and truffle stop sitting on top of each other
+  and the margin gate stops rejecting real answers. Cohesion is not comparable
+  across backbones (0.71/0.73 vs 0.83/0.84 -- lower, on the better model), so
+  judge a backbone by `eval`, never by the cohesion `enrol` prints.
+- **EfficientNet costs 3.6x the identification latency.** Measured on the dev
+  machine: **340 ms for one crop and 723 ms for four**, against 94 / 190 ms for
+  `mobilenet_v3_small`. The render thread is unaffected -- the worker still
+  drops all but the newest frame -- so this buys nothing but staleness: a name
+  now lands ~0.7 s after the frame it was computed from rather than ~0.2 s.
+  That still refreshes comfortably inside `MAX_AGE_S` (2.0 s), which is the
+  number that would actually start dropping names, but it is the budget to
+  watch if a third dog joins or a slower backbone is tried.
+- **Try a bigger backbone before reaching for `finetune`.** It is one `enrol`
+  and one `eval`, no training loop, and here it recovered most of what the
+  margins were losing. `--arch` is the knob; the cache is keyed by width, so
+  the two backbones' embeddings coexist without clobbering each other.
+- **The client defaults its backbone to the gallery's, like `dogid` does.**
+  `create_identifier` used to hardcode `mobilenet_v3_small`, so enrolling under
+  a different `--arch` left the viewer silently mismatched -- and it surfaced
+  from the identification worker thread as a dimension error, not as advice.
+  It now reads the recorded spec and calls `check_embedder`, whose message
+  names the *arch* as well as the backend (two torch backbones both report
+  'torch', so the old wording said "built with 'torch', you are using 'torch'").
 - **The serving gates must not gate the labeller's suggestion.** `label` shows
   least-certain crops first, so the crops at the front of the queue are by
   construction the ones `Gallery.match` rejects -- on the real dataset all 500

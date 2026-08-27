@@ -13,6 +13,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -241,6 +242,24 @@ def test_identifier_thread_produces_labels(tmp_path):
 
 
 # -- drawing ----------------------------------------------------------------
+
+
+def test_create_identifier_follows_the_gallery_backbone(tmp_path):
+    """The viewer must not hardcode a backbone the gallery was not built with.
+
+    It used to default to `mobilenet_v3_small` regardless, so enrolling under
+    another `--arch` left the client silently mismatched and the failure came
+    out of the identification worker thread as a dimension error. Here a hash
+    gallery must produce a hash embedder without being told.
+    """
+    from picam_yolo.client.identity import create_identifier
+
+    gallery, _ = _gallery(tmp_path)
+    gallery.save(tmp_path / "g.npz")
+
+    ident = create_identifier(tmp_path / "g.npz")
+    assert ident.embedder.backend == "hash"
+    assert ident.embedder.dim == gallery.dim
 
 
 def test_detection_label_variants():

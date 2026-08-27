@@ -253,8 +253,8 @@ class DogIdentifier:
 
 def create_identifier(
     gallery_path,
-    backend: str = "torch",
-    arch: str = "mobilenet_v3_small",
+    backend: str | None = None,
+    arch: str | None = None,
     weights: str | None = None,
     min_similarity: float | None = None,
     min_margin: float | None = None,
@@ -265,11 +265,24 @@ def create_identifier(
     `dogid` is imported here rather than at module scope so that a client
     installed with only `[client]` -- no torch -- keeps working. Nothing on the
     viewing path touches this unless `--gallery` was passed.
+
+    The backbone defaults to **whatever the gallery was built with**, matching
+    `dogid`'s own default. Centroids mean nothing under another backbone, and a
+    hardcoded default here meant that enrolling under a different `--arch` left
+    the viewer silently mismatched -- it surfaced from a worker thread as a
+    dimension error, not as advice.
     """
     from ..dogid.embed import create_embedder
     from ..dogid.gallery import Gallery
 
     gallery = Gallery.load(gallery_path)
+    spec = gallery.embedder or {}
+    if backend is None:
+        backend = gallery.backend
+    if arch is None:
+        arch = spec.get("arch") or "mobilenet_v3_small"
+    if weights is None:
+        weights = spec.get("weights")
     # Thresholds are baked into the npz at enrol time, but they are also the
     # knob most worth turning while watching a live stream -- and re-enrolling
     # to try a value means re-embedding the whole dataset.
@@ -280,9 +293,10 @@ def create_identifier(
 
     embed_kwargs = {"arch": arch, "weights_path": weights} if backend == "torch" else {}
     embedder = create_embedder(backend, **embed_kwargs)
+    gallery.check_embedder(embedder)
     log.info(
-        "identifying %d dog(s) [%s] with %s: min_similarity=%.2f min_margin=%.2f",
-        len(gallery.dog_names), ", ".join(gallery.dog_names), backend,
+        "identifying %d dog(s) [%s] with %s/%s: min_similarity=%.2f min_margin=%.2f",
+        len(gallery.dog_names), ", ".join(gallery.dog_names), backend, arch,
         gallery.min_similarity, gallery.min_margin,
     )
     return DogIdentifier(gallery, embedder, **kwargs)

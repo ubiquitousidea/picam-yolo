@@ -104,8 +104,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="enrolled gallery npz; enables naming dogs on the stream",
     )
-    g.add_argument("--embedder", choices=("hash", "torch"), default="torch")
-    g.add_argument("--arch", default="mobilenet_v3_small")
+    g.add_argument("--embedder", choices=("hash", "torch"), default=None,
+                   help="default: match the gallery")
+    g.add_argument("--arch", default=None, help="default: match the gallery")
     g.add_argument("--weights", default=None, help="fine-tuned embedder checkpoint")
     g.add_argument(
         "--min-similarity",

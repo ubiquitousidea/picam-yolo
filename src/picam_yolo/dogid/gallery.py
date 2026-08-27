@@ -176,13 +176,22 @@ class Gallery:
         """
         if getattr(embedder, "dim", self.dim) == self.dim:
             return
+        # Name the arch, not just the backend: two torch backbones both report
+        # 'torch', so "built with 'torch', you are using 'torch'" said nothing.
+        def describe(backend, arch):
+            return f"{backend}/{arch}" if arch else backend
+
         was = self.backend
+        arch = self.embedder.get("arch")
+        theirs = getattr(embedder, "backend", "?")
+        their_arch = getattr(embedder, "arch", None)
         raise SystemExit(
-            f"this gallery was built with the {was!r} embedder "
-            f"({self.dim}-dim) but you are using {getattr(embedder, 'backend', '?')!r} "
+            f"this gallery was built with the {describe(was, arch)!r} embedder "
+            f"({self.dim}-dim) but you are using {describe(theirs, their_arch)!r} "
             f"({embedder.dim}-dim).\n"
-            f"Pass --embedder {was}, or rebuild it with `enrol --embedder "
-            f"{getattr(embedder, 'backend', 'torch')}`."
+            f"Pass --embedder {was}" + (f" --arch {arch}" if arch else "")
+            + f", or rebuild it with `enrol --embedder {theirs}"
+            + (f" --arch {their_arch}" if their_arch else "") + "`."
         )
 
     def nearest(self, embedding: np.ndarray) -> Match:

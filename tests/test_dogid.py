@@ -349,6 +349,28 @@ def test_uncertain_order_uses_the_gallery_margin(tmp_path):
     assert margins == sorted(margins)
 
 
+class _StubEmbedder:
+    """Just enough surface for `check_embedder`, without importing torch."""
+
+    def __init__(self, backend, arch, dim):
+        self.backend, self.arch, self.dim = backend, arch, dim
+
+
+def test_embedder_mismatch_names_the_arch_not_just_the_backend(tmp_path):
+    """Two torch backbones both report 'torch', so the backend alone said
+    nothing: the message read "built with 'torch' but you are using 'torch'"."""
+    ds, _, _ = _labelled_dataset(tmp_path)
+    gallery = Gallery.build(ds, create_embedder("hash"))
+    gallery.embedder = {"backend": "torch", "arch": "efficientnet_b0", "dim": 1280}
+    gallery.centroids = np.zeros((len(gallery.names), 1280), dtype=np.float32)
+
+    with pytest.raises(SystemExit) as e:
+        gallery.check_embedder(_StubEmbedder("torch", "mobilenet_v3_small", 576))
+    msg = str(e.value)
+    assert "torch/efficientnet_b0" in msg and "torch/mobilenet_v3_small" in msg
+    assert "--arch efficientnet_b0" in msg, "must say what to type"
+
+
 def test_labeller_suggests_even_when_the_gates_would_reject(tmp_path):
     """The suggestion must not be gated by the serving thresholds.
 
