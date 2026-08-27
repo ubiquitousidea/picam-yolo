@@ -11,7 +11,10 @@ Two things make this bearable to actually use on a few thousand crops:
 suggested name; Enter accepts it. Labelling degenerates to a keypress per crop
 for everything the model already gets right, and only disagreements cost real
 attention. With no gallery yet, the first pass is manual -- enrol after ~20
-crops and re-run to get suggestions for the rest.
+crops and re-run to get suggestions for the rest. The suggestion is *ungated*
+-- a guess the viewer would refuse to draw is still shown here, marked amber
+with its margin -- because the crops shown first are the ones the gates reject.
+See `Labeler.suggest`.
 
 **Not every crop is usable, and that is a third answer.** `m` discards a crop
 that shows two dogs in one padded box, or a motion smear, without feeding it to
@@ -37,7 +40,7 @@ import numpy as np
 
 from .dataset import DISCARD, NOT_A_DOG, UNKNOWN, CropDataset, CropRecord
 from .embed import Embedder
-from .gallery import Gallery
+from .gallery import Gallery, Match
 
 log = logging.getLogger(__name__)
 
@@ -134,18 +137,27 @@ class Labeler:
 
     # -- suggestion --------------------------------------------------------
 
-    def suggest(self, rec: CropRecord) -> tuple[str | None, float]:
+    def suggest(self, rec: CropRecord) -> Match | None:
+        """The gallery's best guess, **ungated** -- see `Gallery.nearest`.
+
+        `match` would answer `None` for anything the viewer would refuse to
+        name, and the default `uncertain` order puts exactly those crops first:
+        every one of the 500 crops a real session opened with failed the margin
+        gate, so the suggestion line read "no suggestion" throughout while the
+        same gallery was happily naming dogs on the live stream. The labeller
+        wants the guess *and* the reason it is shaky, so it shows both and
+        marks the ones serving would reject.
+        """
         if self.embedder is None or self.gallery is None:
-            return None, 0.0
+            return None
         vecs, _ = self.dataset.embed_ids_present(self.embedder, [rec.crop_id])
         if not len(vecs):
-            return None, 0.0
-        m = self.gallery.match(vecs[0])
-        return m.name, m.confidence
+            return None
+        return self.gallery.nearest(vecs[0])
 
     # -- drawing -----------------------------------------------------------
 
-    def _panel(self, rec: CropRecord, idx: int, total: int, suggestion, conf) -> np.ndarray:
+    def _panel(self, rec: CropRecord, idx: int, total: int, match: Match | None) -> np.ndarray:
         import cv2
 
         panel = np.full((PANEL_H, CANVAS_W, 3), 32, dtype=np.uint8)
@@ -160,9 +172,18 @@ class Labeler:
             return panel
 
         put(f"[{idx + 1}/{total}]  conf {rec.det_conf:.2f}  {rec.crop_id[:10]}", 12, 24)
-        if suggestion:
-            put(f"suggestion: {suggestion}  ({conf:.2f})", 12, 52, 0.7, (120, 255, 160), 2)
-            put("enter = accept", 400, 52, 0.5, (120, 255, 160))
+        if match is not None and match.name:
+            # Amber rather than green when the serving gates would reject it:
+            # still the model's best guess, but one to actually look at. Both
+            # numbers are shown because they fail for opposite reasons -- a low
+            # similarity means "not like anything enrolled", a thin margin means
+            # "between two dogs".
+            unsure = self.gallery is not None and self.gallery.rejects(match)
+            colour = (110, 200, 255) if unsure else (120, 255, 160)
+            put(f"suggestion: {match.name}  ({match.confidence:.2f})", 12, 52, 0.7, colour, 2)
+            put("enter = accept", 400, 52, 0.5, colour)
+            note = f"margin {match.margin:.3f} vs {match.runner_up or '-'}"
+            put(note + ("  -- unsure" if unsure else ""), 400, 72, 0.45, colour)
         else:
             put("no suggestion (enrol a gallery to get them)", 12, 52, 0.55, (160, 160, 160))
 
@@ -175,9 +196,9 @@ class Labeler:
         )
         return panel
 
-    def render(self, rec: CropRecord, idx: int, total: int, suggestion, conf) -> np.ndarray:
+    def render(self, rec: CropRecord, idx: int, total: int, match: Match | None) -> np.ndarray:
         img = self.dataset.image(rec.crop_id)
-        return np.vstack([letterbox(img, CANVAS_W, CANVAS_H), self._panel(rec, idx, total, suggestion, conf)])
+        return np.vstack([letterbox(img, CANVAS_W, CANVAS_H), self._panel(rec, idx, total, match)])
 
     # -- input -------------------------------------------------------------
 
@@ -254,22 +275,22 @@ class Labeler:
 
         cv2.namedWindow(window, cv2.WINDOW_AUTOSIZE)
         idx = 0
-        suggestion, conf = self.suggest(records[0])
+        match = self.suggest(records[0])
         try:
             while 0 <= idx < len(records):
                 rec = records[idx]
-                cv2.imshow(window, self.render(rec, idx, len(records), suggestion, conf))
+                cv2.imshow(window, self.render(rec, idx, len(records), match))
                 key = cv2.waitKey(20) & 0xFF
                 if key == 255:
                     continue
-                action = self.handle_key(key, rec, suggestion)
+                action = self.handle_key(key, rec, match.name if match else None)
                 if action == "quit":
                     break
                 if action in ("next", "back"):
                     idx += 1 if action == "next" else -1
                     idx = max(0, idx)
                     if idx < len(records):
-                        suggestion, conf = self.suggest(records[idx])
+                        match = self.suggest(records[idx])
         finally:
             cv2.destroyWindow(window)
 

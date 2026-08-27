@@ -349,6 +349,28 @@ def test_uncertain_order_uses_the_gallery_margin(tmp_path):
     assert margins == sorted(margins)
 
 
+def test_labeller_suggests_even_when_the_gates_would_reject(tmp_path):
+    """The suggestion must not be gated by the serving thresholds.
+
+    `label` shows least-certain crops first, so those crops are precisely the
+    ones a gated suggestion suppresses: the first real session opened on 500
+    crops that all failed the margin gate and showed "no suggestion" on every
+    one of them, while the same gallery named dogs happily on the live stream.
+    """
+    from picam_yolo.dogid.labeler import Labeler
+
+    ds, _, _ = _labelled_dataset(tmp_path)
+    embedder = create_embedder("hash")
+    gallery = Gallery.build(ds, embedder, min_similarity=0.99, min_margin=0.99)
+    rec = ds.records[ds.add(synth_dog(20, seed=700), source="t", ts=0.0,
+                            box=(0, 0, 128, 128), det_conf=0.9)]
+
+    assert gallery.match(embedder.embed([ds.image(rec.crop_id)])[0]).name is None
+    match = Labeler(ds, embedder, gallery).suggest(rec)
+    assert match is not None and match.name in gallery.names
+    assert gallery.rejects(match), "this fixture is only meaningful if serving would reject"
+
+
 # -- CLI argument positions ------------------------------------------------
 
 

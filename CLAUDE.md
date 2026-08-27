@@ -531,6 +531,15 @@ Non-obvious bits:
   so margins run 0.014-0.081. Dropping the margin to 0.01 took accuracy from
   **27.3% to 90.9% with nothing rejected**, changing no other setting. `eval`
   now names which gate did the rejecting, because the two have opposite fixes.
+- **The serving gates must not gate the labeller's suggestion.** `label` shows
+  least-certain crops first, so the crops at the front of the queue are by
+  construction the ones `Gallery.match` rejects -- on the real dataset all 500
+  crops of the first screenful failed `min_margin`, and every one read "no
+  suggestion" while the same gallery was naming dogs fine on the live stream.
+  `Gallery.nearest` is the ungated form the labeller uses; it shows the guess in
+  amber with its margin and runner-up instead of hiding it. Rejecting is a
+  *serving* decision (never put a name on a stranger); labelling wants the guess
+  precisely when the model is unsure.
 - **`enrol` inherits the gates from the gallery it replaces.** They are the
   tuned part of a gallery and live nowhere else, so rebuilding after labelling
   more crops silently reverted a tuned `min_margin` of 0.01 to the 0.05 default

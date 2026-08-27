@@ -185,8 +185,16 @@ class Gallery:
             f"{getattr(embedder, 'backend', 'torch')}`."
         )
 
-    def match(self, embedding: np.ndarray) -> Match:
-        """Nearest centroid, subject to the similarity and margin gates."""
+    def nearest(self, embedding: np.ndarray) -> Match:
+        """Nearest centroid with **no gate applied** -- `name` is always set.
+
+        The gates are a *serving* decision: the viewer must not put a name on a
+        stranger, so a thin margin has to become a non-answer. Labelling wants
+        the opposite. A crop sitting between two centroids is precisely what a
+        person is worth asking about, and `label` deliberately shows those
+        first, so gating the suggestion there suppresses it on exactly the
+        crops it exists for. `match` gates, this does not, and the caller picks.
+        """
         vec = l2_normalise(np.asarray(embedding, dtype=np.float32).reshape(1, -1))[0]
         if vec.shape[0] != self.dim:
             raise ValueError(
@@ -202,9 +210,24 @@ class Gallery:
         runner_up = self.names[second] if second is not None else None
         margin = best_sim - float(sims[second]) if second is not None else best_sim
 
-        if best_name == REJECT or best_sim < self.min_similarity or margin < self.min_margin:
-            return Match(None, best_sim, margin, runner_up=best_name)
         return Match(best_name, best_sim, margin, runner_up=runner_up)
+
+    def rejects(self, match: Match) -> bool:
+        """Whether the serving gates turn `match` into a non-answer."""
+        return (
+            match.name == REJECT
+            or match.confidence < self.min_similarity
+            or match.margin < self.min_margin
+        )
+
+    def match(self, embedding: np.ndarray) -> Match:
+        """Nearest centroid, subject to the similarity and margin gates."""
+        best = self.nearest(embedding)
+        if self.rejects(best):
+            # `runner_up` carries what it *would* have been: the client draws it
+            # as `dog ? 0.42`, and `eval` needs it to say which gate rejected.
+            return Match(None, best.confidence, best.margin, runner_up=best.name)
+        return best
 
     def match_batch(self, embeddings: np.ndarray) -> list[Match]:
         return [self.match(e) for e in np.asarray(embeddings)]
