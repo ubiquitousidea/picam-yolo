@@ -665,6 +665,31 @@ Non-obvious bits:
   a fine-tuned checkpoint yields different vectors from the same architecture,
   and sharing a cache between them would mix two embedding spaces silently.
 
+- **Identification covers the classes a dog gets misread as, not just `dog`.**
+  The detector reads our dogs as `cat` and `teddy bear`, and because
+  `client/identity.py` and `dogid/capture.py` filtered on the literal name, such
+  a frame lost its name *and* was never harvested -- the identity pipeline was
+  blind to exactly the frames it most needed. `DEFAULT_CLASSES` is now
+  `("dog", "cat", "teddy bear")` in both, with `--classes` on the viewer and on
+  `dogid capture` to narrow it again. Whether a box is one of our dogs is the
+  gallery's decision, and on a 60 px subject it is better at it than a nano
+  detector's fine-grained class head.
+- **That widening depends on a populated rejection class, and warns when it is
+  missing.** Scored against dog centroids alone, a genuine cat comes back
+  confidently named -- cosine similarity to the nearest centroid runs high for
+  *any* subject, which is the whole reason `__reject__` exists. The gallery as
+  built on 2026-08-27 had **no rejection class at all** (only `daisy` and
+  `truffle`; zero crops labelled `__unknown__` or `__not_a_dog__`), so
+  `create_identifier` now says so at startup rather than letting it surface as a
+  cat called daisy. Harvesting is the fix: the wider filter collects the
+  confusion frames, the ones that are really strangers get `__not_a_dog__`, and
+  `enrol` builds the centroid that turns them down.
+- **`CropRecord` records `det_name`.** Harvesting more than one class makes "what
+  did the detector call this" the difference between a name and `__not_a_dog__`,
+  and it was previously lost the moment the crop was written. Defaulted to
+  `"dog"`, so records written before the field existed load unchanged -- correct,
+  since nothing else was harvested then.
+
 `train.finetune()` is a deliberate skeleton — its docstring carries the intended
 shape. Run `eval` first: a pretrained backbone plus `enrol` is often enough, and
 metric learning is only worth it when the confusion matrix shows two dogs

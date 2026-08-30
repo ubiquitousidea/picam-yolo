@@ -15,6 +15,8 @@ import logging
 import sys
 from pathlib import Path
 
+from .capture import DEFAULT_CLASSES
+
 log = logging.getLogger(__name__)
 
 DEFAULT_ROOT = Path("dogid")
@@ -79,6 +81,8 @@ def cmd_capture(args) -> int:
         cameras=args.cameras,
         min_conf=args.min_conf,
         novelty=args.novelty,
+        **({"classes": tuple(c.strip() for c in args.classes.split(",") if c.strip())}
+           if args.classes else {}),
     )
     print(f"kept {kept} new crop(s); dataset now holds {len(ds.records)}")
     return 0
@@ -226,6 +230,13 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--cameras", type=int, nargs="*", default=None)
     c.add_argument("--min-conf", type=float, default=0.4)
     c.add_argument("--novelty", type=int, default=8, help="0 keeps near-duplicates")
+    c.add_argument(
+        "--classes",
+        default=None,
+        help="comma-separated detection labels to harvest (default: "
+        f"{','.join(DEFAULT_CLASSES)}). The extras are what a dog gets misread "
+        "as; label them __not_a_dog__ if they really are strangers.",
+    )
     c.set_defaults(func=cmd_capture)
 
     c = sub.add_parser("label", parents=[shared], help="assign identities to crops")

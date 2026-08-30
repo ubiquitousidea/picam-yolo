@@ -8,10 +8,16 @@ import socket
 import subprocess
 import sys
 
+from .identity import DEFAULT_CLASSES
 from .recorder import StreamRecorder
 from .viewer import Viewer
 
 log = logging.getLogger(__name__)
+
+
+def _classes(spec: str) -> tuple[str, ...]:
+    """Split a --classes value. Comma-separated, because "teddy bear" has a space."""
+    return tuple(c.strip() for c in spec.split(",") if c.strip())
 
 
 def _ssh_config_hostname(alias: str) -> str | None:
@@ -116,6 +122,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     g.add_argument("--min-margin", type=float, default=None)
     g.add_argument(
+        "--classes",
+        default=None,
+        help="comma-separated detection labels to identify "
+        f"(default: {','.join(DEFAULT_CLASSES)}). Narrow to 'dog' to "
+        "identify only boxes the detector was already sure about.",
+    )
+    g.add_argument(
         "--identify-interval",
         type=float,
         default=0.3,
@@ -153,6 +166,7 @@ def main(argv: list[str] | None = None) -> int:
                 min_similarity=args.min_similarity,
                 min_margin=args.min_margin,
                 min_interval=args.identify_interval,
+                **({"classes": _classes(args.classes)} if args.classes else {}),
             )
         except FileNotFoundError:
             raise SystemExit(

@@ -48,7 +48,17 @@ IOU_MATCH = 0.3
 # it and lands on whatever walks through the same patch of frame next.
 MAX_AGE_S = 2.0
 
-DEFAULT_CLASSES = ("dog",)
+# The classes a dog gets read as. Identifying only boxes labelled "dog" means a
+# dog the detector called a cat silently loses its name, which is the failure
+# this set exists to cover: the gallery's rejection class is what decides whether
+# a box is one of our dogs, and it is better at that than the detector's
+# fine-grained class head on a 60px subject.
+#
+# Deliberately a copy of `dogid.capture.DEFAULT_CLASSES` rather than an import.
+# This module must stay importable with only the [client] extra installed -- note
+# that `identify_frame` imports from dogid *lazily*, inside the function, for the
+# same reason. Keep the two in step.
+DEFAULT_CLASSES = ("dog", "cat", "teddy bear")
 
 
 def name_color(name: str) -> tuple[int, int, int]:
@@ -299,4 +309,35 @@ def create_identifier(
         len(gallery.dog_names), ", ".join(gallery.dog_names), backend, arch,
         gallery.min_similarity, gallery.min_margin,
     )
+    _warn_if_undefended(gallery, kwargs.get("classes", DEFAULT_CLASSES))
     return DogIdentifier(gallery, embedder, **kwargs)
+
+
+def _warn_if_undefended(gallery, classes) -> None:
+    """Say so when a wide class filter meets a gallery that cannot reject.
+
+    We identify more than boxes labelled "dog", because the detector reads our
+    dogs as cats and teddy bears. That is safe only while the gallery can answer
+    "nobody" -- and its ability to do so rests on the `__reject__` centroid built
+    from `__unknown__` / `__not_a_dog__` crops. With no such centroid, a genuine
+    cat is scored against dog centroids alone, and cosine similarity to the
+    nearest centroid runs high for *any* subject, so it comes back confidently
+    named rather than rejected.
+
+    Warn rather than refuse: naming a cat "daisy" on a preview window is a
+    cosmetic error, and the fix needs crops that only a live session can gather.
+    """
+    from ..dogid.gallery import REJECT
+
+    extra = [c for c in classes if c != "dog"]
+    if not extra or REJECT in gallery.names:
+        return
+    log.warning(
+        "this gallery has no rejection class, but identification covers %s as "
+        "well as dogs -- a real %s will be given a dog's name instead of being "
+        "turned down. Harvest some with `dogid capture`, label them "
+        "__not_a_dog__ in `dogid label`, then re-run `dogid enrol`. "
+        "Until then, --classes dog restores the narrow behaviour.",
+        ", ".join(extra),
+        extra[0],
+    )

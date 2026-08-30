@@ -31,7 +31,16 @@ log = logging.getLogger(__name__)
 
 PAD_FRAC = 0.12
 MIN_CROP_PX = 64  # below this there is not enough detail to identify anyone
-DEFAULT_CLASSES = ("dog",)
+# The classes a dog gets read as. Harvesting only "dog" throws away exactly the
+# frames the gallery most needs: a dog the detector called a cat is a hard pose,
+# and it is also the frame we would want labelled __not_a_dog__ if it really was
+# a cat. Either way the crop is worth keeping -- the gallery's rejection class,
+# not the detector, is what decides.
+#
+# `client.identity` keeps its own copy of this tuple rather than importing it:
+# that module must stay importable with only the [client] extra installed, and a
+# module-scope import of dogid would break that. Keep the two in step.
+DEFAULT_CLASSES = ("dog", "cat", "teddy bear")
 
 
 def pad_box(box, width: int, height: int, frac: float = PAD_FRAC):
@@ -126,6 +135,7 @@ class CropHarvester:
                 ts=header.ts,
                 box=det.box,
                 det_conf=det.conf,
+                det_name=det.name,
             )
             if added is None:
                 self.skipped_dup += 1

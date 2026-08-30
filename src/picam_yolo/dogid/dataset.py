@@ -68,7 +68,14 @@ class CropRecord:
     source: str  # where it came from, e.g. "cam0" or a video path
     ts: float  # capture time, epoch seconds, from FrameHeader.ts
     box: tuple[float, float, float, float]  # in the *source frame*, for provenance
-    det_conf: float  # the detector's confidence that this was a dog
+    det_conf: float  # the detector's confidence in `det_name`
+    # What the detector actually called it. Crops are harvested from the classes
+    # a dog gets confused for, not just "dog", so this is the difference between
+    # "a clear dog" and "a dog the detector called a teddy bear" -- which is
+    # exactly what you want to know while labelling. Defaulted, so records
+    # written before this field existed load unchanged; "dog" is correct for
+    # them, since nothing else was harvested then.
+    det_name: str = "dog"
     label: str = UNLABELLED
     split: str = "train"  # train | val, assigned at label time
     labelled_at: float = 0.0
@@ -131,7 +138,9 @@ class CropDataset:
             fh.write(json.dumps(asdict(rec), separators=(",", ":")) + "\n")
         self.records[rec.crop_id] = rec
 
-    def add(self, jpeg: bytes, source: str, ts: float, box, det_conf: float) -> str | None:
+    def add(
+        self, jpeg: bytes, source: str, ts: float, box, det_conf: float, det_name: str = "dog"
+    ) -> str | None:
         """Store a crop. Returns its id, or None if it was already present."""
         crop_id = hashlib.sha1(jpeg).hexdigest()
         if crop_id in self.records:
@@ -144,6 +153,7 @@ class CropDataset:
                 ts=ts,
                 box=tuple(float(v) for v in box),
                 det_conf=float(det_conf),
+                det_name=det_name,
             )
         )
         return crop_id

@@ -82,19 +82,57 @@ def test_dataset_survives_a_truncated_manifest(tmp_path):
     assert len(CropDataset.open(tmp_path).records) == 1
 
 
-def test_harvester_skips_small_and_wrong_class(tmp_path):
-    ds = CropDataset.open(tmp_path)
-    h = CropHarvester(ds)
-    frame = np.zeros((480, 640, 3), dtype=np.uint8)
-    header = FrameHeader(
+def _two_box_header():
+    return FrameHeader(
         cam_id=0, seq=1, ts=1.0, width=640, height=480,
         detections=[
             Detection(16, "dog", 0.9, (10, 10, 30, 30)),      # too small
-            Detection(15, "cat", 0.9, (100, 100, 300, 300)),  # wrong class
+            Detection(15, "cat", 0.9, (100, 100, 300, 300)),  # a confusable class
         ],
     )
-    assert h.feed(frame, header) == 0
+
+
+def test_harvester_skips_small_crops(tmp_path):
+    ds = CropDataset.open(tmp_path)
+    h = CropHarvester(ds, classes=("dog",))
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    assert h.feed(frame, _two_box_header()) == 0
     assert h.skipped_small == 1
+
+
+def test_harvester_filters_by_class(tmp_path):
+    """Both halves of the class filter.
+
+    The default is deliberately wider than "dog": the detector reads our dogs as
+    cats and teddy bears often enough that harvesting only "dog" throws away the
+    very crops the gallery needs. Whether such a crop is really one of our dogs
+    is the gallery's rejection class to decide, not the detector's.
+    """
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+
+    wide = CropHarvester(CropDataset.open(tmp_path / "wide"))
+    assert wide.feed(frame, _two_box_header()) == 1  # the cat box is kept
+    assert wide.skipped_small == 1
+
+    narrow = CropHarvester(CropDataset.open(tmp_path / "narrow"), classes=("dog",))
+    assert narrow.feed(frame, _two_box_header()) == 0  # and dropped when asked
+
+
+def test_harvested_crop_records_the_detected_class(tmp_path):
+    """Which class produced a crop survives to labelling time.
+
+    Without it a harvested crop gives no clue whether the detector was confident
+    it was a dog or had called it a teddy bear -- exactly what you want to know
+    when deciding between a name and __not_a_dog__.
+    """
+    ds = CropDataset.open(tmp_path)
+    h = CropHarvester(ds)
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    assert h.feed(frame, _two_box_header()) == 1
+
+    reloaded = CropDataset.open(tmp_path)
+    (rec,) = reloaded.records.values()
+    assert rec.det_name == "cat"
 
 
 def test_gallery_round_trip_identifies_and_rejects(tmp_path):
