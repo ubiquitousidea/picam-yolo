@@ -16,3 +16,9 @@ recordings/
 # Root-anchored, or it would also match src/picam_yolo/dogid/.
 /dogid/
 /dogid-*/
+
+# YOLO checkpoints: large, and re-downloaded on demand by ultralytics
+*.pt
+
+# Detector benchmark corpus: captured frames, not source
+/bench/

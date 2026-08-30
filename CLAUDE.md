@@ -57,6 +57,24 @@ python -m picam_yolo.client --host rpi --gallery dogid/gallery.npz
 python -m picam_yolo.client --host rpi --gallery dogid/gallery.npz --min-similarity 0.45
 ```
 
+Choosing a detector (desktop; needs `ultralytics`):
+
+```bash
+# Archive real frames off the wire -- raw JPEG payloads, no re-encode. Only
+# frames where the live model saw something dog-shaped, so the corpus is the
+# failure population rather than an hour of empty room.
+python scripts/bench_model.py grab --host rpi --corpus bench --seconds 900
+
+python scripts/bench_model.py run --corpus bench \
+    --candidate yolo11n.pt:416 --candidate yolo11s.pt:416 \
+    --candidate yolo11n.pt:640
+```
+
+Do not benchmark against `recordings/` -- the viewer records *annotated* frames
+unless `--record-raw` was passed, so the boxes and HUD are burned into the
+pixels. `dogid/crops/` is clean but already cropped, which removes the
+small-object regime that causes the misclassification in the first place.
+
 Exporting a model (run wherever torch is installed; the result is portable):
 
 ```bash
@@ -261,6 +279,41 @@ and **inference is the limiter again** at ~49 of the ~77 ms budget. From here
 `--detect-every 2` is the next real gain, not a smaller frame: it lifts the
 server to **19.1 fps** (inference every other frame, boxes reused between), still
 on two cores and still `throttled=0x0`.
+
+**Detector size and `--imgsz` cost about the same, and both are affordable.**
+Measured 2026-08-27 on two pinned cores at 2028x1520, `--detect-every 2`, over
+90-second windows. Capture (~4 ms) and encode (~22 ms) do not move, so inference
+is the whole story:
+
+| model | imgsz | infer | fps at N=2 | .bin |
+|---|---|---|---|---|
+| yolo11n | 416 | **48.4 ms** | 20.0 | 10 MB |
+| yolo11n | 640 | 111 ms | 12.0 | 10 MB |
+| yolo11s | 416 | 120 ms | 11.5 | 38 MB |
+| yolo11s | 640 | 269 ms | 6.2 | 38 MB |
+
+Three things this settles:
+
+- **yolo11s costs 2.5x nano, not the 3.3x its FLOPs imply** (21.5 vs 6.5 GFLOPs).
+  NCNN goes memory-bound at this size, so the FLOP ratio overestimates the bill.
+  Project from measurement, not from the model card.
+- **The two levers are interchangeable in cost.** yolo11s@416 (120 ms) and
+  yolo11n@640 (111 ms) are within 8 % of each other, so the choice between "a
+  bigger model" and "a bigger input" is purely an accuracy question. Stacking
+  both (269 ms) is what is unaffordable.
+- **None of this browns out the board.** Every run held `throttled=0x0` at
+  55-60 C. The power ceiling is set by how many cores are busy, not how hard --
+  and this is still two. Cost here is paid in frame rate alone.
+
+Fixed overhead is ~26 ms, so `fps = 1000 / (26 + infer/N)`. For yolo11s@416 that
+puts `--detect-every 4` at ~18 fps and `N=5` at ~20 -- parity with the nano
+baseline, for boxes 4-5 frames stale.
+
+**Slowing the server down buys JPEG quality back.** The link is a byte budget
+(~29 Mbit/s), so it caps *frames x bytes*, not frames. At 20 fps a frame gets
+~181 KiB and q60 is forced; at 11.5 fps it gets ~315 KiB, which fits q80
+comfortably. A heavier detector is therefore partly self-funding: fewer frames,
+each visibly better. For identifying a dog, crop quality beats frame rate.
 
 **But server fps is not delivered fps.** At q80 that 19 fps stream needs ~40
 Mbit/s and the link gives ~29, so 28 % of frames were dropped and the client saw
