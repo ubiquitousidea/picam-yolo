@@ -9,6 +9,13 @@ set -euo pipefail
 
 REPO_DIR="${REPO_DIR:-$HOME/picam-yolo}"
 VENV_PY="$REPO_DIR/.venv/bin/python"
+# Cores the server may use, and the inference threads to match. Four browns out
+# a board fed by an under-spec supply, so check before widening:
+#   od -An -tu4 --endian=big /sys/firmware/devicetree/base/chosen/power/max_current
+# 5000 means the supply negotiated 5V/5A and four cores are affordable; 3000 is
+# the conservative fallback, and CORES=0,1 THREADS=1 is the safe setting there.
+CORES="${CORES:-0-3}"
+THREADS="${THREADS:-4}"
 UNIT_DIR="$HOME/.config/systemd/user"
 UNIT="$UNIT_DIR/picam-yolo.service"
 ENVFILE="$HOME/.config/picam-yolo.env"
@@ -51,13 +58,15 @@ StartLimitBurst=10
 Type=simple
 WorkingDirectory=$REPO_DIR
 Environment=PYTHONUNBUFFERED=1
-Environment=OMP_NUM_THREADS=1
-Environment=MKL_NUM_THREADS=1
+# These, not --threads, are what actually bind: detector.py sets the same
+# variables with os.environ.setdefault, so anything exported here wins.
+Environment=OMP_NUM_THREADS=$THREADS
+Environment=MKL_NUM_THREADS=$THREADS
 EnvironmentFile=$ENVFILE
 # taskset rather than the CPUAffinity= directive: narrowing your own affinity
 # needs no privileges, while the unit directive can be refused in a user
-# manager. Two cores, because this board browns out under four.
-ExecStart=/usr/bin/taskset -c 0,1 $VENV_PY -u -m picam_yolo.server \$PICAM_ARGS
+# manager.
+ExecStart=/usr/bin/taskset -c $CORES $VENV_PY -u -m picam_yolo.server \$PICAM_ARGS
 Restart=always
 RestartSec=5
 Nice=5
@@ -71,6 +80,7 @@ StandardError=append:$REPO_DIR/run.log
 WantedBy=default.target
 EOF
 
+echo "pinning to cores $CORES with $THREADS inference thread(s)"
 systemctl --user daemon-reload
 systemctl --user enable --now picam-yolo.service
 sleep 4

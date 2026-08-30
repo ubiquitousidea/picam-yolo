@@ -35,6 +35,7 @@ ssh rpi 'REPO_DIR=$HOME/picam-yolo bash picam-yolo/scripts/setup_pi.sh'
 
 ./scripts/piserver.sh start --backend none                # video only, no inference
 ./scripts/piserver.sh start --model models/yolo11n_ncnn_model --imgsz 416
+CORES=0,1 THREADS=1 ./scripts/piserver.sh start ...       # fall back to two cores
 ./scripts/piserver.sh log -f | status | stop
 
 ./scripts/piservice.sh stop               # stop the systemd unit (returns at boot)
@@ -274,6 +275,16 @@ budget, not a frame budget: delivered fps is roughly `29 Mbit/s / bytes-per-fram
 whatever the server manages to publish. Server-side fps above that line converts
 entirely into dropped frames.
 
+**Four cores makes the link the binding constraint, not the board.** Measured
+2026-08-30 from this desktop against the 21.9 fps stream: the Pi publishes
+21.3 fps at 126 KiB/frame (**21.9 Mbit/s, zero drops** to a subscriber running
+*on the Pi*), but only **11.3 Mbit/s and 11.5 fps arrive here -- 46.6 % dropped
+in flight**. That is well under the ~29 Mbit/s measured previously, and it is
+not the Pi's radio: -41 dBm, 5 GHz ch44, 270 Mbit/s PHY. Run the localhost
+subscriber first whenever delivered fps disappoints -- it splits "the server is
+slow" from "the link ate them" in one measurement, and only the second is worth
+chasing on the desktop side.
+
 **Measure delivered rate over a window, after a warmup.** A subscriber is handed
 its backlog as a burst on join, so a short sample reads far too high -- one
 8-frame sample of this stream showed "48.8 Mbit/s, no gaps" where a 9-second
@@ -281,26 +292,32 @@ sample of the *same* stream showed 28.9 Mbit/s and **28 % of frames missing**.
 Same trap `client/recorder.py` documents for frame-rate estimation. Compare
 `FrameHeader.seq` spans against the received count; rate alone hides drops.
 
-**This board reboots under multi-core CPU load. This is the dominant
-constraint on all work here.** Confirmed three times: a YOLO server run, a
-4-core NCNN export, and a second YOLO run all killed it within seconds to
-minutes. It does not recover on its own — it needs a manual power cycle.
-`vcgencmd get_throttled` returns `0x50000` (bit 16: under-voltage occurred;
-bit 18: throttling occurred). `EXT5V_V` reads a healthy 5.02 V at idle, so the
-supply sags only under load. Swapping to a second power supply did not fix it.
+**The board used to reboot under multi-core CPU load, and it was the supply.**
+Fixed on 2026-08-30 by swapping to a supply that negotiates 5 V/5 A; the history
+below is kept because the *symptom* is worth recognising and the diagnosis is
+the template for the next one. Confirmed three times on the old powerbank: a
+YOLO server run, a 4-core NCNN export, and a second YOLO run all killed the
+board within seconds to minutes, with no self-recovery -- it needed a manual
+power cycle. `vcgencmd get_throttled` returned `0x50000` (bit 16: under-voltage
+occurred; bit 18: throttling occurred). `EXT5V_V` read a healthy 5.02 V at idle,
+so the supply sagged only under load, and swapping to a second *equally
+under-spec* supply did not fix it.
 
-**The workaround that works: constrain the load.** A single-core export
-completed cleanly where the 4-core one crashed:
+**The one check that settles it** -- run this before trusting any supply, and
+after any swap:
 
 ```bash
-OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 taskset -c 0 nice -n 10 .venv/bin/python scripts/export_model.py ...
+od -An -tu4 --endian=big /sys/firmware/devicetree/base/chosen/power/max_current
+od -An -tu4 --endian=big /sys/firmware/devicetree/base/chosen/power/usb_max_current_enable
 ```
 
-Apply the same shape to the server (`taskset -c 0,1 --threads 1`) until the
-power problem is fixed. **Inference throughput on unconstrained cores remains
-unmeasured** — every attempt has crashed the board.
+`5000` and `1` mean the supply negotiated 5 V/5 A and four cores are affordable.
+`3000` and `0` are the conservative fallback: pin to two cores
+(`CORES=0,1 THREADS=1`) and constrain exports to one
+(`OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 taskset -c 0 nice -n 10 ...`), or the
+board will reboot rather than throttle.
 
-**The supply is the root cause, and it is now measured.** The powerbank in use
+**The supply was the root cause, and it was measured.** The powerbank in use
 on 2026-08-25 advertises these USB-PD profiles: 5 V/2.4 A (12 W), 9 V/2.22 A,
 12 V/1.67 A, PPS 3.3-11 V/2 A. **The Pi 5 draws only from the 5 V rail**, so the
 bank's headline 20 W is unreachable and the real budget is **12 W** -- under half
@@ -315,20 +332,53 @@ median but **5.4 W peak** -- brownout is driven by the peak, not the average.
 Doubling the core term projects ~2.9 A at 5 V against a 2.4 A limit.
 
 **Four cores was tried on 2026-08-25 and rebooted the board in under a minute**,
-confirming that projection. Two findings from it:
+confirming that projection. One finding from it outlives the fix:
 
-- It is not worth retrying even with a bigger supply. The one surviving 4-core
-  sample managed **15.4 fps against 12.9 on two cores -- about 20 %** -- because
-  NCNN already saturates two cores at imgsz 416. `--detect-every 2` beats that
-  comfortably on two cores at no stability cost.
 - **Never park an experimental config in the unit.** The drop-in that enabled
   four cores survived the reboot it caused, and the enabled unit auto-started
   straight back into it -- a crash loop, caught only by hand. Test risky
-  settings with a one-shot foreground run, not a persistent unit change.
+  settings with a one-shot foreground run, not a persistent unit change. That is
+  still how the 2026-08-30 retry was done: `CORES=all ./scripts/piserver.sh
+  start ...` with the unit stopped, soaked for ten minutes under telemetry, and
+  only then written into the unit.
 
-Two-core pinning otherwise holds: four minutes at full sensor resolution kept
-`throttled=0x0` at 58 C. Note that `get_throttled` resets at boot, so a crash
-leaves no forensic trace -- the `0x0` seen after a reboot means nothing.
+Note that `get_throttled` resets at boot, so a crash leaves no forensic trace --
+the `0x0` seen after a reboot means nothing.
+
+**With a 5 V/5 A supply, four cores is stable and worth ~70 %.** Measured
+2026-08-30, `--size 2028x1520 --imgsz 416 --detect-every 2 --jpeg-quality 60`,
+ten minutes under 3-second telemetry sampling:
+
+| | two cores | four cores |
+|---|---|---|
+| server fps | 12.9 | **21.9 mean, 22.9 peak** |
+| infer | 48.4 ms | **37.1 ms** |
+| temp | 58 C | 57.4 mean, **60.4 max** |
+| throttled | 0x0 | **0x0 throughout** |
+| ARM clock | -- | never below **2400 MHz** |
+| EXT5V | 5.02 idle | 5.12 mean, **4.97 min** |
+| VDD_CORE peak | 5.4 W | **7.0 W** (7.94 A at 0.88 V) |
+
+Three things this settles:
+
+- **The old "four cores buys only 20 %" note was wrong, and wrongly reasoned.**
+  It came from the single sample that survived the 2026-08-25 crash -- a board
+  already browning out and throttling, so it measured the failure, not the
+  configuration. NCNN does *not* saturate at two cores here: inference falls
+  48.4 -> 37.1 ms and the server goes 12.9 -> 21.9 fps, about **70 %**. Never
+  project performance from a sample taken while `get_throttled` is non-zero.
+- **Peak core draw rose 30 % and the supply did not care.** VDD_CORE peaks at
+  7.0 W against 5.4 W on two cores, and EXT5V never fell below 4.97 V. That
+  headroom is exactly what the 12 W powerbank did not have.
+- **Cooling is not the limit either.** 60.4 C max, and the ARM clock never left
+  2400 MHz, so nothing was thermally capped. The Pi 5 does not start throttling
+  until 80 C.
+
+**With inference at 37 ms, `--detect-every 1` becomes affordable.** Measured the
+same day: **16.0 fps with a fresh box on every frame**, 58 C, `throttled=0x0` --
+still matching `fps = 1000 / (26 + infer/N)`. So four cores can be spent either
+way: 21.9 fps with boxes every other frame, or 16.0 fps with boxes on every one.
+Which is right depends on the link (above), not on the board.
 
 **Every crash zeroes recently written files.** ext4 replays its journal and
 leaves 0-byte stubs. This has already destroyed an exported model (10 MB → 0 B,
@@ -376,8 +426,8 @@ excludes `models/` unless `WITH_MODELS=1`.
 `picam-yolo.service` from the invoking user and their checkout rather than
 hardcoding `/home/pi`. Arguments come from `/etc/default/picam-yolo` via
 `EnvironmentFile`, so the unit itself rarely needs editing. It sets
-`CPUAffinity=0 1` for brownout protection and `StartLimitBurst=5` so a
-permanent fault fails visibly instead of crash-looping.
+`CPUAffinity=$CORES` and `StartLimitBurst=5` so a permanent fault fails visibly
+instead of crash-looping.
 
 `sudo` on this Pi requires a password and a TTY, so a system unit cannot be
 installed over a non-interactive `ssh` — `ssh -t` does not help when stdin is
@@ -385,6 +435,13 @@ itself not a terminal. `scripts/install_user_service.sh` is therefore the path
 that actually works here: a user unit needs no root, and `loginctl
 enable-linger` succeeds unprivileged on this box, which is what makes a user
 unit start at boot without a login session.
+
+Both installers take `CORES` and `THREADS` (default `0-3` and `4`, which needs
+the 5 V/5 A supply -- see the power section). `THREADS` is written as
+`OMP_NUM_THREADS`/`MKL_NUM_THREADS` in the unit rather than as the server's
+`--threads`, because `detector.py` sets those with `os.environ.setdefault`: an
+exported value wins, so the unit's old hardcoded `1` silently overrode whatever
+`--threads` asked for.
 
 Two consequences for user units specifically: use `taskset` in `ExecStart`
 rather than the `CPUAffinity=` directive (narrowing your own affinity needs no

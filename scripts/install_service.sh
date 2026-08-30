@@ -16,6 +16,13 @@ fi
 SVC_USER="${SUDO_USER:-pi}"
 REPO_DIR="${REPO_DIR:-$(getent passwd "$SVC_USER" | cut -d: -f6)/picam-yolo}"
 VENV_PY="$REPO_DIR/.venv/bin/python"
+# Cores the server may use, and the inference threads to match. Four browns out
+# a board fed by an under-spec supply, so check before widening:
+#   od -An -tu4 --endian=big /sys/firmware/devicetree/base/chosen/power/max_current
+# 5000 means the supply negotiated 5V/5A and four cores are affordable; 3000 is
+# the conservative fallback, and CORES="0 1" THREADS=1 is the safe setting there.
+CORES="${CORES:-0 1 2 3}"
+THREADS="${THREADS:-4}"
 
 [[ -x "$VENV_PY" ]] || { echo "no venv at $VENV_PY -- run scripts/setup_pi.sh first" >&2; exit 1; }
 
@@ -50,15 +57,16 @@ Type=simple
 User=$SVC_USER
 WorkingDirectory=$REPO_DIR
 Environment=PYTHONUNBUFFERED=1
-Environment=OMP_NUM_THREADS=1
-Environment=MKL_NUM_THREADS=1
+# These, not --threads, are what actually bind: detector.py sets the same
+# variables with os.environ.setdefault, so anything exported here wins.
+Environment=OMP_NUM_THREADS=$THREADS
+Environment=MKL_NUM_THREADS=$THREADS
 EnvironmentFile=$DEFAULTS
 ExecStart=$VENV_PY -u -m picam_yolo.server \$PICAM_ARGS
 Restart=always
 RestartSec=5
-# This board browns out under multi-core load; two cores has been stable where
-# four was not. Widen only after the power supply is known good.
-CPUAffinity=0 1
+# Widen only with a supply that negotiates 5V/5A -- see CORES above.
+CPUAffinity=$CORES
 Nice=5
 
 [Install]

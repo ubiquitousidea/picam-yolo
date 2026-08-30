@@ -69,13 +69,15 @@ case "$cmd" in
     ssh -n "$HOST" 'for i in $(seq 20); do ss -ltn 2>/dev/null | grep -q ":5555 " || exit 0; sleep 0.25; done; exit 1' \
       || { echo "port 5555 still held after 5s; run '$0 status'" >&2; exit 1; }
 
-    # CORES pins the server to a subset of CPUs. This board browns out and
-    # reboots under multi-core load, so constraining it is the difference
-    # between a running server and a power cycle. CORES=all to opt out.
+    # CORES pins the server to a subset of CPUs and THREADS sizes inference to
+    # match. All four are only safe with a supply that negotiates 5V/5A -- on an
+    # under-spec one the board browns out and reboots, so CORES=0,1 THREADS=1 is
+    # the fallback. CORES=all leaves affinity and thread counts alone entirely.
+    cores="${CORES:-0-3}"; threads="${THREADS:-4}"
     prefix=""
-    if [[ "${CORES:-0,1}" != "all" ]]; then
-      prefix="env OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 taskset -c ${CORES:-0,1} nice -n 5 "
-      printf 'pinned to cores %s (set CORES=all to disable)\n' "${CORES:-0,1}"
+    if [[ "$cores" != "all" ]]; then
+      prefix="env OMP_NUM_THREADS=$threads MKL_NUM_THREADS=$threads taskset -c $cores nice -n 5 "
+      printf 'pinned to cores %s, %s inference thread(s) (set CORES=all to disable)\n' "$cores" "$threads"
     fi
 
     printf 'starting: %s\n' "${args[*]}"

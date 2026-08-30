@@ -47,7 +47,8 @@ Knobs for `setup_pi.sh`: `REPO_DIR` (default `~/picam-yolo`), `IMGSZ` (default
 416, and it must match the server's `--imgsz`), `SKIP_MODEL=1` when you intend
 to rsync a model over instead. The model export is pinned to a single core
 deliberately — a 4-core export browns out an under-powered Pi 5, and the reboot
-leaves a truncated model behind.
+leaves a truncated model behind. See
+[Power and CPU cores](#power-and-cpu-cores) for how to tell whether yours is.
 
 Cloning this repo directly on the Pi works too, and needs no credentials now
 that it is public:
@@ -126,18 +127,25 @@ does not need an interactive login:
 ```
 
 Stopping the unit is what actually drops the Pi's power draw: capture and NCNN
-inference are what keep two cores busy, and both end with the process. Note the
-difference between `stop` and `off` — a stopped-but-enabled unit comes back at
-the next boot, which on this board can happen on its own.
+inference are what keep all four cores busy, and both end with the process. Note
+the difference between `stop` and `off` — a stopped-but-enabled unit comes back
+at the next boot.
 
 Where passwordless sudo is available, `scripts/install_service.sh` installs the
 equivalent system unit instead (config in `/etc/default/picam-yolo`).
 
-Both pin the server to two cores for the reason given under Tuning, and give up
-after repeated failed starts rather than crash-looping on a permanent fault such
-as a missing model. Output goes to `run.log` rather than the journal, because
-this Pi keeps no user journal; the file grows unbounded, so truncate it if that
-ever matters.
+Both take `CORES` and `THREADS` (default `0-3` and `4` — see
+[Power and CPU cores](#power-and-cpu-cores) before trusting that on a new
+supply), and give up after repeated failed starts rather than crash-looping on a
+permanent fault such as a missing model.
+
+```bash
+# fall back to two cores on a supply that cannot deliver 5 V/5 A
+ssh rpi 'CORES=0,1 THREADS=1 bash ~/picam-yolo/scripts/install_user_service.sh'
+```
+
+Output goes to `run.log` rather than the journal, because this Pi keeps no user
+journal; the file grows unbounded, so truncate it if that ever matters.
 
 ## Identifying individual dogs
 
@@ -322,12 +330,68 @@ CPU-only inference is the bottleneck. In rough order of effect:
 `--backend none` disables detection entirely, which is the quickest way to tell
 whether a problem is in inference or in capture/transport.
 
-Server-side frame rate is not delivered frame rate. The link here tops out
-around 29 Mbit/s, and it is a *byte* budget: raising `--detect-every` without
-also lowering `--jpeg-quality` produces extra frames that are only dropped in
-flight. Compare `FrameHeader.seq` spans against frames received to see it --
-rate alone hides drops, and a short sample reads far too high because a
-subscriber is handed its backlog as a burst on join.
+### Power and CPU cores
+
+**Check the supply before widening the core count.** A Pi 5 fed by an under-spec
+supply does not throttle under multi-core load — it browns out and reboots, and
+it will not come back without a manual power cycle. The firmware records what
+the supply negotiated:
+
+```bash
+od -An -tu4 --endian=big /sys/firmware/devicetree/base/chosen/power/max_current
+od -An -tu4 --endian=big /sys/firmware/devicetree/base/chosen/power/usb_max_current_enable
+```
+
+`5000` and `1` mean a real 5 V/5 A (25 W) supply and all four cores are safe.
+`3000` and `0` are the conservative fallback — stay on two cores
+(`CORES=0,1 THREADS=1`). Note that a USB-PD powerbank's headline wattage is
+usually unreachable here: the Pi 5 draws only from the 5 V rail, so a bank
+advertising 20 W across 5/9/12 V profiles may really offer 12 W.
+
+**With a 25 W supply, four cores is stable and worth about 70 %.** Measured over
+ten minutes at `--size 2028x1520 --imgsz 416 --detect-every 2 --jpeg-quality 60`:
+
+| | two cores | four cores |
+|---|---|---|
+| server fps | 12.9 | **21.9** |
+| inference | 48.4 ms | **37.1 ms** |
+| temp | 58 °C | 57.4 mean, **60.4 max** |
+| `get_throttled` | `0x0` | **`0x0` throughout** |
+| ARM clock | — | never below **2400 MHz** |
+| VDD_CORE peak | 5.4 W | **7.0 W** |
+
+Peak core draw rises about 30 % — that peak, not the average, is what browns out
+a weak supply. Cooling is not the constraint at either setting: this board is
+still 20 °C below the 80 °C throttle point with all four cores loaded.
+
+Faster inference also makes `--detect-every 1` affordable again: **16.0 fps with
+a fresh box on every frame**, at the same thermals. Frame rate and box freshness
+are the two ways to spend the headroom — `fps ≈ 1000 / (26 + infer/N)` predicts
+both well.
+
+**Test a wider core count with a one-shot run, never by editing the unit.** An
+enabled unit carrying a config that reboots the board auto-starts straight back
+into it, which is a crash loop:
+
+```bash
+./scripts/piservice.sh stop
+CORES=all ./scripts/piserver.sh start --model models/yolo11n_ncnn_model ...
+```
+
+### The link, not the Pi, may be the limit
+
+Server-side frame rate is not delivered frame rate. The link is a *byte* budget
+— it has measured as high as 29 Mbit/s here — so raising `--detect-every` without also lowering `--jpeg-quality` produces extra
+frames that are only dropped in flight. Compare `FrameHeader.seq` spans against
+frames received to see it — rate alone hides drops, and a short sample reads far
+too high because a subscriber is handed its backlog as a burst on join.
+
+This bites harder once the server is faster. On the four-core stream a
+subscriber **on the Pi** received all 21.3 fps at 126 KiB/frame (21.9 Mbit/s,
+zero drops), while the desktop over wifi received **11.5 fps — 46.6 % dropped in
+flight**. Running a subscriber locally on the Pi first is the cheapest way to
+split "the server is slow" from "the link ate them"; only the second is worth
+chasing on the network.
 
 ## Camera exposure
 
