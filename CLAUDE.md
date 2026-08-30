@@ -315,6 +315,16 @@ baseline, for boxes 4-5 frames stale.
 comfortably. A heavier detector is therefore partly self-funding: fewer frames,
 each visibly better. For identifying a dog, crop quality beats frame rate.
 
+**`export_model.py` names the output after the checkpoint, not the size.**
+Ultralytics derives `yolo11n_ncnn_model` from `yolo11n.pt` alone, so exporting
+the same weights at another `--imgsz` silently replaces the first export -- and
+since NCNN bakes input dimensions into the graph, everything still passing the
+old `--imgsz` then gets silently wrong boxes rather than an error. `--outname`
+keeps them apart (`yolo11n640_ncnn_model`), and the script warns when it
+overwrites a model built at a different size. `setup_pi.sh` takes `WEIGHTS` and
+derives its `MODEL_DIR` from the same value, which it previously hardcoded while
+passing only `--imgsz` to the export -- the two agreed by coincidence.
+
 **But server fps is not delivered fps.** At q80 that 19 fps stream needs ~40
 Mbit/s and the link gives ~29, so 28 % of frames were dropped and the client saw
 13.1 -- no better than before. Adding `--jpeg-quality 60` cuts frames from ~270
