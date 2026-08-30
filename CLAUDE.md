@@ -315,6 +315,16 @@ baseline, for boxes 4-5 frames stale.
 comfortably. A heavier detector is therefore partly self-funding: fewer frames,
 each visibly better. For identifying a dog, crop quality beats frame rate.
 
+**Log timings as a window mean over inferring frames only.** The 5-second line
+used to report the *last* frame's `infer_ms`, which with `--detect-every 2`
+alternates between the true cost and 0.0 -- neither is the answer, and a run
+sampled at the wrong moment reads as free. Averaging over *all* frames instead
+reports the amortised cost, which halves when `--detect-every` doubles even
+though nothing about the model changed. `pipeline.py` now sums over the frames
+that actually ran inference and prints the count alongside
+(`infer 48.5ms over 50 frames`), so the figure means "what one inference costs"
+and stays comparable across `--detect-every` settings.
+
 **`export_model.py` names the output after the checkpoint, not the size.**
 Ultralytics derives `yolo11n_ncnn_model` from `yolo11n.pt` alone, so exporting
 the same weights at another `--imgsz` silently replaces the first export -- and

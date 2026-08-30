@@ -119,6 +119,12 @@ class CameraPipeline(threading.Thread):
         consecutive_failures = 0
         window_start = time.monotonic()
         window_frames = 0
+        # Accumulate per-stage cost over the log window. Reporting the *last*
+        # frame's timings instead is misleading whenever detect_every > 1: that
+        # frame either ran inference or skipped it, so `infer` alternates
+        # between the true cost and 0.0 and neither number is the answer.
+        window_capture = window_encode = window_infer = 0.0
+        window_inferred = 0  # frames that actually ran inference
 
         try:
             self.source.start()
@@ -132,7 +138,8 @@ class CameraPipeline(threading.Thread):
                 frame = self.source.read()
                 t_cap = time.monotonic()
 
-                if seq % self.detect_every == 0:
+                inferred = seq % self.detect_every == 0
+                if inferred:
                     try:
                         last_detections = self.detector.detect(frame)
                         consecutive_failures = 0
@@ -174,18 +181,32 @@ class CameraPipeline(threading.Thread):
 
                 seq += 1
                 window_frames += 1
+                window_capture += header.capture_ms
+                window_encode += header.encode_ms
+                # Averaged over inferring frames only, so the figure means "what
+                # one inference costs" and stays comparable across detect_every
+                # settings. Divide by window_frames instead and it silently
+                # reports the amortised cost, which halves when detect_every
+                # doubles even though the model has not changed.
+                if inferred:
+                    window_infer += header.infer_ms
+                    window_inferred += 1
                 elapsed = time.monotonic() - window_start
                 if elapsed >= 5.0:
                     log.info(
-                        "cam%d %.1f fps (capture %.1fms, infer %.1fms, encode %.1fms, %d boxes)",
+                        "cam%d %.1f fps (capture %.1fms, infer %.1fms over %d frames, "
+                        "encode %.1fms, %d boxes)",
                         cam_id,
                         window_frames / elapsed,
-                        header.capture_ms,
-                        header.infer_ms,
-                        header.encode_ms,
+                        window_capture / window_frames,
+                        window_infer / window_inferred if window_inferred else 0.0,
+                        window_inferred,
+                        window_encode / window_frames,
                         len(last_detections),
                     )
                     window_start, window_frames = time.monotonic(), 0
+                    window_capture = window_encode = window_infer = 0.0
+                    window_inferred = 0
         finally:
             self.source.stop()
             log.info("cam%d pipeline stopped after %d frames", cam_id, seq)
